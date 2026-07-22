@@ -1130,6 +1130,7 @@ export function ChatPage() {
       codexModelOptions={codexModelOptions}
       showCodexPlanMode={shouldShowCodexPlanModeControl(capabilitySource)}
       showGoalControl={shouldShowGoalControl(capabilitySource)}
+      showClaudeGoalControl={shouldShowPollyClaudeGoalControl(activeSession)}
       costRoutingVerdict={costRoutingVerdict}
       costRoutingEligible={costRoutingEligible}
       subAgentLabel={subAgentLabel}
@@ -1362,6 +1363,8 @@ interface MainAgentSurfaceProps {
   showCodexPlanMode: boolean;
   /** Show the session Goal control. */
   showGoalControl?: boolean;
+  /** Show Polly's Claude SDK command-backed Goal control. */
+  showClaudeGoalControl?: boolean;
   /** Latest advisor verdict for the cost-routing pill; null when none. */
   costRoutingVerdict: CostRoutingVerdict | null;
   /** Session passes `isCostRoutingSession` (polly orchestrator, not a child). */
@@ -1436,6 +1439,7 @@ function MainAgentSurface({
   codexModelOptions,
   showCodexPlanMode,
   showGoalControl = false,
+  showClaudeGoalControl = false,
   costRoutingVerdict,
   costRoutingEligible,
   subAgentLabel,
@@ -1846,6 +1850,7 @@ function MainAgentSurface({
         codexModelOptions={codexModelOptions}
         showCodexPlanMode={showCodexPlanMode}
         showGoalControl={showGoalControl}
+        showClaudeGoalControl={showClaudeGoalControl}
         isTerminalFirst={isTerminalFirst}
         isNativeWrapper={isNativeWrapper}
         reconnectHint={liveness.kind === "runner_asleep" || liveness.kind === "host_asleep"}
@@ -3368,6 +3373,8 @@ interface ComposerProps {
   showCodexPlanMode: boolean;
   /** Show the session Goal control. */
   showGoalControl?: boolean;
+  /** Show Polly's Claude SDK command-backed Goal control. */
+  showClaudeGoalControl?: boolean;
   /**
    * Terminal-first session (Chat/Terminal pill present). Presentation
    * only: tightens the composer's bottom padding to `pb-1.5` so it sits
@@ -3837,6 +3844,7 @@ export function Composer({
   codexModelOptions,
   showCodexPlanMode,
   showGoalControl = false,
+  showClaudeGoalControl = false,
   isTerminalFirst = false,
   isNativeWrapper = false,
   reconnectHint = false,
@@ -5008,6 +5016,15 @@ export function Composer({
                 backendLabel="Codex"
               />
             )}
+            {showClaudeGoalControl && (
+              <GoalControl
+                mode="command"
+                conversationId={conversationId}
+                readOnly={isReadOnly}
+                onStartGoal={(condition) => onSend(`/goal ${condition}`)}
+                backendLabel="Claude"
+              />
+            )}
             <AgentPicker
               agents={agents}
               isLoading={agentsLoading}
@@ -5362,6 +5379,17 @@ export function shouldShowGoalControl(
   conv: { labels?: Record<string, string | null> | null } | null | undefined,
 ): boolean {
   return isCodexNativeSession(conv);
+}
+
+/** True for top-level Polly sessions running on the Claude SDK harness. */
+export function shouldShowPollyClaudeGoalControl(
+  session: Pick<Session, "agentName" | "harness" | "parentSessionId"> | null | undefined,
+): boolean {
+  return (
+    session?.parentSessionId == null &&
+    session?.agentName?.toLowerCase() === "polly" &&
+    session?.harness === "claude-sdk"
+  );
 }
 
 /**
