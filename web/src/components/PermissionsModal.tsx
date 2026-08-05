@@ -43,7 +43,8 @@ import {
 } from "@/hooks/usePermissions";
 import { useUserSearch } from "@/hooks/useUserSearch";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
-import { getOmnigentTransformShareLink, getOmnigentUserSearch } from "@/lib/host";
+import { getOmnigentUserSearch } from "@/lib/host";
+import { getDeepLink, getShareableLink } from "@/lib/deepLink";
 import { useRebasePath } from "@/lib/routing";
 import { cn } from "@/lib/utils";
 
@@ -463,36 +464,6 @@ function AddUserCombobox({ value, onChange }: AddUserFieldProps) {
       )}
     </div>
   );
-}
-
-/**
- * The basename-rebased session path turned into an absolute URL. In the embed
- * the host transform returns the full URL (origin included); standalone has no
- * transform, so we prepend the origin ourselves.
- */
-function getShareableLink(sessionId: string, rebasePath: (path: string) => string): string {
-  const path = rebasePath(`/c/${sessionId}`);
-  const transform = getOmnigentTransformShareLink();
-  return transform ? transform(path) : `${window.location.origin}${path}`;
-}
-
-/**
- * The `omnigent://<host>/c/<session_id>` deep link encoded into the share QR
- * code. The host (with port when non-default) is parsed from the same shareable
- * URL `getShareableLink` resolves — so standalone and embedded (host-transformed)
- * origins agree on the same server the desktop shell's deep-link handler keys
- * off of (see `electron/src/deepLink.js`). The path is always basename-less
- * `/c/<id>`; the workspace mount is server-determined and intentionally absent.
- */
-function getDeepLink(sessionId: string, rebasePath: (path: string) => string): string {
-  const url = getShareableLink(sessionId, rebasePath);
-  try {
-    const { host } = new URL(url);
-    return `omnigent://${host}/c/${sessionId}`;
-  } catch {
-    // Unparseable transform output: fall back to the current origin's host.
-    return `omnigent://${window.location.host}/c/${sessionId}`;
-  }
 }
 
 function CopyLinkButton({ sessionId }: { sessionId: string }) {
