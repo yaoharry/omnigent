@@ -89,6 +89,30 @@ describe("parseSystemMessage", () => {
     });
   });
 
+  it("classifies a wake with the quiet-until-drain clause as subagent_wake", () => {
+    const r = parseSystemMessage(
+      "[System: sub-agent claude_code/joke-programming finished (completed) — 3 results waiting in inbox. Call sys_read_inbox to collect. Further completions won't wake you until you drain the inbox; you'll be woken again once all dispatched sub-agents have finished.]",
+    );
+
+    expect(r).toEqual({
+      kind: "subagent_wake",
+      label: "Sub-agent result ready",
+      body: "",
+    });
+  });
+
+  it("classifies an all-sub-agents-finished wake as subagent_wake", () => {
+    const r = parseSystemMessage(
+      "[System: sub-agent claude_code/joke-programming finished (completed) — 3 results waiting in inbox — all dispatched sub-agents have finished. Call sys_read_inbox to collect.]",
+    );
+
+    expect(r).toEqual({
+      kind: "subagent_wake",
+      label: "Sub-agent result ready",
+      body: "",
+    });
+  });
+
   it("falls back to generic for known prefix but unknown pattern", () => {
     const r = parseSystemMessage("[System: something brand new]");
     expect(r).toEqual({

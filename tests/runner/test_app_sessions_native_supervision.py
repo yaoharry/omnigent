@@ -1305,7 +1305,10 @@ async def test_subagent_completion_during_parent_wake_turn_posts_followup_wake()
     the parent starts processing that wake notice, the debounce must be
     considered consumed. A second child completion that lands while the parent
     turn is still active should therefore enqueue a follow-up wake rather than
-    leaving the result stranded until a human sends another message.
+    leaving the result stranded until a human sends another message. With the
+    undrained-inbox quiet latch, that follow-up fires via the last-completion
+    exception: this second child is the fan-out's final one, so its completion
+    makes every tracked child terminal.
     """
     from omnigent.runner import app as runner_app
 
@@ -1984,6 +1987,265 @@ async def test_concurrent_subagent_completions_coalesce_into_one_wake() -> None:
         f"Expected exactly one (debounced) wake POST for the fan-out, got "
         f"{len(server_client.wake_posts)}."
     )
+
+
+@pytest.mark.asyncio
+async def test_undrained_inbox_suppresses_repeat_wakes_until_batch_finishes() -> None:
+    """
+    Repeat completions stay quiet while the parent's wake sits undrained.
+
+    Once a wake notice is delivered, further completions post nothing until
+    the parent drains the inbox — the notice already told it results are
+    waiting, so another wake would only churn a duplicate parent turn. The
+    one exception is the LAST completion of a fan-out: when every tracked
+    child is terminal the parent wakes again with the all-finished marker,
+    so a parent awaiting the batch still gets its done signal.
+    """
+    from omnigent.runner import app as runner_app
+
+    parent_id = "aa10f1e2d3c4b5a6978870615243abcd"
+    child_a = "bb10f1e2d3c4b5a6978870615243abcd"
+    child_b = "cc10f1e2d3c4b5a6978870615243abcd"
+    child_c = "dd10f1e2d3c4b5a6978870615243abcd"
+    session_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    server_client = _WakeRecordingServerClient(parent_id)
+    gate = asyncio.Event()
+    harness_client = _BlockingHarnessClient(
+        [
+            _sse({"type": "response.created", "response": {"id": "resp_quiet"}}),
+            _sse({"type": "response.completed", "response": {"id": "resp_quiet"}}),
+        ],
+        gate,
+    )
+    pm = _FakeProcessManager(harness_client)  # type: ignore[arg-type]
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        server_client=server_client,  # type: ignore[arg-type]
+    )
+
+    runner_app._session_inboxes_ref[parent_id] = session_inbox
+    # All three children are registered up front so child B's completion is
+    # never the fan-out's last — its suppression must come from the
+    # notified latch, not the all-finished exception.
+    for child_id, title in ((child_a, "first"), (child_b, "second"), (child_c, "third")):
+        runner_app.register_subagent_work(
+            parent_session_id=parent_id,
+            child_session_id=child_id,
+            agent="claude",
+            title=title,
+        )
+
+    try:
+        async with _runner_client(app) as client:
+            # 1. First completion wakes the idle parent.
+            resp_a = await client.post(
+                f"/v1/sessions/{child_a}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {"status": "idle", "output": "A_DONE"},
+                },
+            )
+            assert resp_a.status_code == 204, resp_a.text
+            await asyncio.wait_for(server_client.wake_seen.wait(), timeout=5.0)
+            assert len(server_client.wake_posts) == 1
+            server_client.wake_seen.clear()
+
+            # 2. The parent wake turn starts (clearing the debounce flag) and
+            # stays active; it never drains the inbox.
+            parent_resp = await client.post(
+                f"/v1/sessions/{parent_id}/events",
+                json={
+                    "type": "message",
+                    "role": "user",
+                    "agent_id": "3006a2a399391aa72a65a507ff92dae3",
+                    "model": "test-agent",
+                    "harness": "openai-agents",
+                    "content": [{"type": "input_text", "text": "wake notice"}],
+                },
+            )
+            assert parent_resp.status_code == 202, parent_resp.text
+            await asyncio.wait_for(harness_client.post_seen.wait(), timeout=5.0)
+
+            # 3. Child B completes mid-turn: the parent was already notified
+            # and never drained, so NO second wake posts. A 2nd here means
+            # the notified latch regressed and the wake storm is back.
+            resp_b = await client.post(
+                f"/v1/sessions/{child_b}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {"status": "idle", "output": "B_DONE"},
+                },
+            )
+            assert resp_b.status_code == 204, resp_b.text
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(server_client.wake_posts) == 1, (
+                f"Expected no repeat wake for the undrained inbox, got "
+                f"{len(server_client.wake_posts)}."
+            )
+
+            # 4. The turn ends. No recovery wake either: nothing is pending —
+            # the parent simply hasn't drained what it was told about.
+            gate.set()
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while app.state.has_active_work():
+                if asyncio.get_running_loop().time() > deadline:
+                    raise AssertionError("parent wake turn did not end within 5s")
+                await asyncio.sleep(0.01)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert len(server_client.wake_posts) == 1, (
+                f"Expected no recovery wake on idle (nothing pending), got "
+                f"{len(server_client.wake_posts)}."
+            )
+
+            # 5. Child C completes: every tracked child is now terminal, so
+            # the batch-end wake posts despite the undrained inbox.
+            resp_c = await client.post(
+                f"/v1/sessions/{child_c}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {"status": "idle", "output": "C_DONE"},
+                },
+            )
+            assert resp_c.status_code == 204, resp_c.text
+            await asyncio.wait_for(server_client.wake_seen.wait(), timeout=5.0)
+    finally:
+        gate.set()
+        for child_id in (child_a, child_b, child_c):
+            runner_app.unregister_subagent_work(child_id)
+        runner_app._session_inboxes_ref.pop(parent_id, None)
+
+    # Two wakes: the first completion, then the fan-out's last. A 3rd means
+    # an interim completion leaked a wake; 1 means the batch-end signal was
+    # wrongly suppressed and a waiting parent would hang.
+    assert len(server_client.wake_posts) == 2, (
+        f"Expected 2 wakes (first completion + batch end), got {len(server_client.wake_posts)}."
+    )
+    first_text = server_client.wake_posts[0]["data"]["content"][0]["text"]
+    assert "sub-agent claude/first finished (completed)" in first_text
+    assert "won't wake you until you drain the inbox" in first_text
+    final_text = server_client.wake_posts[1]["data"]["content"][0]["text"]
+    assert "sub-agent claude/third finished (completed)" in final_text
+    assert "3 results waiting in inbox" in final_text
+    assert "all dispatched sub-agents have finished" in final_text
+    assert session_inbox.qsize() == 3, (
+        f"Expected all 3 completions in the parent inbox, got {session_inbox.qsize()}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_inbox_drain_rearms_subagent_completion_wake() -> None:
+    """
+    Draining the inbox re-arms completion wakes for the parent.
+
+    The quiet latch exists because an undrained wake notice already told the
+    parent results are waiting; once the parent collects them via
+    sys_read_inbox that rationale is gone, so the next completion must wake
+    it again. Child C never completes, keeping child B's completion
+    non-terminal for the fan-out so the all-finished exception cannot mask a
+    missing re-arm — without the drain hook the wake count stays at 1.
+    """
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import _drain_inbox
+
+    parent_id = "ee20f1e2d3c4b5a6978870615243abcd"
+    child_a = "ff20f1e2d3c4b5a6978870615243abcd"
+    child_b = "0a30f1e2d3c4b5a6978870615243abcd"
+    child_c = "1b30f1e2d3c4b5a6978870615243abcd"
+    session_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    server_client = _WakeRecordingServerClient(parent_id)
+    gate = asyncio.Event()
+    harness_client = _BlockingHarnessClient(
+        [
+            _sse({"type": "response.created", "response": {"id": "resp_rearm"}}),
+            _sse({"type": "response.completed", "response": {"id": "resp_rearm"}}),
+        ],
+        gate,
+    )
+    pm = _FakeProcessManager(harness_client)  # type: ignore[arg-type]
+    app = create_runner_app(
+        process_manager=pm,  # type: ignore[arg-type]
+        server_client=server_client,  # type: ignore[arg-type]
+    )
+
+    runner_app._session_inboxes_ref[parent_id] = session_inbox
+    for child_id, title in ((child_a, "first"), (child_b, "second"), (child_c, "third")):
+        runner_app.register_subagent_work(
+            parent_session_id=parent_id,
+            child_session_id=child_id,
+            agent="claude",
+            title=title,
+        )
+
+    try:
+        async with _runner_client(app) as client:
+            # 1. Child A completes → wake #1, latch set.
+            resp_a = await client.post(
+                f"/v1/sessions/{child_a}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {"status": "idle", "output": "A_DONE"},
+                },
+            )
+            assert resp_a.status_code == 204, resp_a.text
+            await asyncio.wait_for(server_client.wake_seen.wait(), timeout=5.0)
+            assert len(server_client.wake_posts) == 1
+            server_client.wake_seen.clear()
+
+            # 2. Parent wake turn starts (clearing the debounce flag).
+            parent_resp = await client.post(
+                f"/v1/sessions/{parent_id}/events",
+                json={
+                    "type": "message",
+                    "role": "user",
+                    "agent_id": "3006a2a399391aa72a65a507ff92dae3",
+                    "model": "test-agent",
+                    "harness": "openai-agents",
+                    "content": [{"type": "input_text", "text": "wake notice"}],
+                },
+            )
+            assert parent_resp.status_code == 202, parent_resp.text
+            await asyncio.wait_for(harness_client.post_seen.wait(), timeout=5.0)
+
+            # 3. The parent drains its inbox mid-turn (server_client=None
+            # requeues the payload for policy retry, but the parent has SEEN
+            # it — the latch must clear).
+            drained_text = await _drain_inbox(
+                session_inbox, server_client=None, conversation_id=parent_id
+            )
+            assert drained_text != "Inbox is empty — no completed tasks."
+            gate.set()
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while app.state.has_active_work():
+                if asyncio.get_running_loop().time() > deadline:
+                    raise AssertionError("parent wake turn did not end within 5s")
+                await asyncio.sleep(0.01)
+
+            # 4. Child B completes: the drain re-armed the wake, so a fresh
+            # notice posts. Without the drain hook this stays at 1 and B's
+            # result strands silently.
+            resp_b = await client.post(
+                f"/v1/sessions/{child_b}/events",
+                json={
+                    "type": "external_session_status",
+                    "data": {"status": "idle", "output": "B_DONE"},
+                },
+            )
+            assert resp_b.status_code == 204, resp_b.text
+            await asyncio.wait_for(server_client.wake_seen.wait(), timeout=5.0)
+    finally:
+        gate.set()
+        for child_id in (child_a, child_b, child_c):
+            runner_app.unregister_subagent_work(child_id)
+        runner_app._session_inboxes_ref.pop(parent_id, None)
+
+    assert len(server_client.wake_posts) == 2, (
+        f"Expected the drain to re-arm the wake (2 posts), got {len(server_client.wake_posts)}."
+    )
+    rearmed_text = server_client.wake_posts[1]["data"]["content"][0]["text"]
+    assert "sub-agent claude/second finished (completed)" in rearmed_text
+    assert "sys_read_inbox" in rearmed_text
 
 
 @pytest.mark.asyncio

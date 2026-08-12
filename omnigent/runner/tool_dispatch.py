@@ -6592,6 +6592,12 @@ async def _drain_inbox(
         ``"conv_parent123"``.
     :returns: Formatted string of completed tasks.
     """
+    if conversation_id is not None:
+        # A drain means the parent has caught up; re-arm completion wakes
+        # that were latched quiet by an earlier undrained wake notice.
+        from omnigent.runner import app as _runner_app
+
+        _runner_app._subagent_wake_notified_ref.discard(conversation_id)
     if inbox is None or inbox.empty():
         return "Inbox is empty — no completed tasks."
     items: list[str] = []

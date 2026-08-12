@@ -36,8 +36,11 @@ const INTERRUPT_RE = /^\[Request interrupted by user(?: for tool use)?\]$/;
 const TASK_RE = /^task (\S+) \((tool|sub_agent|client_tool)\) (completed|failed|cancelled)$/;
 const TIMER_RE = /^timer (\S+) fired$/;
 const TERMINAL_RE = /^terminal (\S+) is idle$/;
+// Matches the bare wake notice plus its two elaborations: an "all
+// dispatched sub-agents have finished" marker on the last completion of a
+// fan-out, and a quiet-until-drain clause on ordinary wakes.
 const SUBAGENT_WAKE_RE =
-  /^sub-agent .+ finished \((completed|failed|cancelled)\) — \d+ results? waiting in inbox\. Call sys_read_inbox to collect\.$/;
+  /^sub-agent .+ finished \((completed|failed|cancelled)\) — \d+ results? waiting in inbox(?: — all dispatched sub-agents have finished)?\. Call sys_read_inbox to collect\..*$/;
 
 const TASK_KIND_LABEL: Record<string, string> = {
   tool: "Tool",

@@ -1238,6 +1238,24 @@ def list_subagent_work(parent_session_id: str) -> list[_SubagentWorkEntry]:
     return sorted(entries, key=lambda entry: entry.created_at)
 
 
+def _all_subagent_work_terminal(parent_session_id: str) -> bool:
+    """
+    Whether every tracked sub-agent dispatch of a parent is terminal.
+
+    Vacuously true when no work is tracked. Used to keep the last
+    completion of a fan-out waking the parent even when earlier
+    completions were already notified.
+
+    :param parent_session_id: Parent session id, e.g.
+        ``"conv_parent123"``.
+    :returns: ``True`` when no tracked child is still running.
+    """
+    return all(
+        entry.status in _SUBAGENT_TERMINAL_STATUSES
+        for entry in list_subagent_work(parent_session_id)
+    )
+
+
 def mark_subagent_work_terminal(
     child_session_id: str,
     *,
@@ -1526,7 +1544,9 @@ def _subagent_delivery_not_confirmed_response(
     )
 
 
-def _format_subagent_wake_notice(*, agent: str, title: str, status: str, pending: int) -> str:
+def _format_subagent_wake_notice(
+    *, agent: str, title: str, status: str, pending: int, all_terminal: bool = False
+) -> str:
     """
     Build the framework notice that wakes a parent after a child finishes.
 
@@ -1535,14 +1555,24 @@ def _format_subagent_wake_notice(*, agent: str, title: str, status: str, pending
     :param status: Terminal child status, e.g. ``"completed"``, ``"failed"``,
         or ``"cancelled"``.
     :param pending: Number of undrained items in the parent inbox, e.g. ``3``.
+    :param all_terminal: Whether this completion makes every tracked child
+        terminal — the wake then marks the end of the fan-out.
     :returns: A ``[System: ...]`` notice string, e.g. ``"[System: sub-agent
         researcher/auth finished (completed) — 1 result waiting in inbox. Call
-        sys_read_inbox to collect.]"``.
+        sys_read_inbox to collect. ...]"``.
     """
     noun = "result" if pending == 1 else "results"
+    if all_terminal:
+        return (
+            f"[System: sub-agent {agent}/{title} finished ({status}) — "
+            f"{pending} {noun} waiting in inbox — all dispatched sub-agents "
+            f"have finished. Call sys_read_inbox to collect.]"
+        )
     return (
         f"[System: sub-agent {agent}/{title} finished ({status}) — "
-        f"{pending} {noun} waiting in inbox. Call sys_read_inbox to collect.]"
+        f"{pending} {noun} waiting in inbox. Call sys_read_inbox to collect. "
+        f"Further completions won't wake you until you drain the inbox; "
+        f"you'll be woken again once all dispatched sub-agents have finished.]"
     )
 
 
@@ -1778,6 +1808,11 @@ _session_event_queues_ref: dict[str, asyncio.Queue[_JsonObject | None]] = {}
 # used by the sub-agent work registry to deliver completions to the parent.
 _session_inboxes_ref: dict[str, asyncio.Queue[_JsonObject]] = {}
 
+# Module-level ref to _subagent_wake_notified. Populated inside
+# create_runner_app; cleared by tool_dispatch._drain_inbox when the parent
+# collects its inbox so a later completion can wake it again.
+_subagent_wake_notified_ref: set[str] = set()
+
 
 def get_session_agent_id(session_id: str) -> str | None:
     """
@@ -1987,6 +2022,8 @@ def create_runner_app(
     app.state.interrupted_sessions = _interrupted_sessions
     _background_tasks: set[asyncio.Task[object]] = set()
     _subagent_wake_pending: set[str] = set()
+    _subagent_wake_notified_ref.clear()
+    _subagent_wake_notified = _subagent_wake_notified_ref
 
     _session_histories = _session_histories_ref
     _last_server_item_id: dict[str, str] = {}
@@ -3371,6 +3408,7 @@ def create_runner_app(
         _session_event_queues.pop(session_id, None)
         _session_inboxes.pop(session_id, None)
         _subagent_wake_pending.discard(session_id)
+        _subagent_wake_notified.discard(session_id)
         _session_sub_agent_names.pop(session_id, None)
         unregister_child_session(session_id)
         unregister_subagent_work_for_session(session_id)
@@ -5003,23 +5041,33 @@ def create_runner_app(
         delivered = await _deliver_subagent_wake_post(
             server_client, parent_id, notice, created_by=created_by
         )
-        if not delivered:
-            _subagent_wake_pending.discard(parent_id)
-            _logger.warning(
-                "Sub-agent wake POST failed for parent=%s child=%s after %d attempt(s); "
-                "result remains in the parent inbox until the next wake",
-                parent_id,
-                child_id,
-                _WAKE_POST_MAX_ATTEMPTS,
-            )
+        if delivered:
+            _subagent_wake_notified.add(parent_id)
+            return
+        _subagent_wake_pending.discard(parent_id)
+        _subagent_wake_notified.discard(parent_id)
+        _logger.warning(
+            "Sub-agent wake POST failed for parent=%s child=%s after %d attempt(s); "
+            "result remains in the parent inbox until the next wake",
+            parent_id,
+            child_id,
+            _WAKE_POST_MAX_ATTEMPTS,
+        )
 
-    def _schedule_subagent_wake(entry: _SubagentWorkEntry) -> None:
+    def _schedule_subagent_wake(entry: _SubagentWorkEntry, *, force: bool = False) -> None:
         if entry.parent_session_id == entry.child_session_id:
             return
         inbox = _session_inboxes.get(entry.parent_session_id)
         if inbox is None:
             return
         if entry.parent_session_id in _subagent_wake_pending:
+            return
+        all_terminal = _all_subagent_work_terminal(entry.parent_session_id)
+        if not force and not all_terminal and entry.parent_session_id in _subagent_wake_notified:
+            # The parent already knows results are waiting and hasn't drained;
+            # another wake would only buy a duplicate turn. The last completion
+            # of a fan-out (all_terminal) always wakes so a parent awaiting the
+            # batch still gets its done signal.
             return
         try:
             loop = asyncio.get_running_loop()
@@ -5031,6 +5079,7 @@ def create_runner_app(
             title=entry.title,
             status=entry.status,
             pending=inbox.qsize(),
+            all_terminal=all_terminal,
         )
         _wake_task = loop.create_task(
             _post_subagent_wake_notice(
@@ -5057,7 +5106,7 @@ def create_runner_app(
             entries,
             key=lambda entry: entry.completed_at if entry.completed_at is not None else 0.0,
         )
-        _schedule_subagent_wake(latest)
+        _schedule_subagent_wake(latest, force=True)
 
     def _mark_subagent_terminal_and_wake(
         child_session_id: str, *, status: str, output: str | None
