@@ -1084,26 +1084,41 @@ def prepare_bridge_dir(
     return bridge_dir
 
 
+# Value seeded into ``fullscreenUpsellSeenCount`` to retire Claude Code's
+# fullscreen-renderer upsell (see :func:`ensure_claude_workspace_trusted`).
+# Claude shows the upsell until the count reaches an internal cap it does not
+# publish, so this is deliberately far above any plausible cap rather than a
+# matched threshold: seeding too high costs nothing, while guessing the exact
+# value would silently start blocking again the next time Claude raises it.
+_CLAUDE_UPSELL_RETIRED_COUNT = 1000
+
+
 def ensure_claude_workspace_trusted(workspace: Path) -> None:
     """
-    Pre-accept Claude Code's first-run trust + onboarding prompts.
+    Pre-accept Claude Code's blocking first-run TUI prompts.
 
-    Claude Code blocks on two TUI prompts the first time it launches in
+    Claude Code blocks on three TUI prompts the first time it launches in
     a new context: a global onboarding flow (theme / login) gated by the
-    top-level ``hasCompletedOnboarding`` key in ``~/.claude.json``, and a
+    top-level ``hasCompletedOnboarding`` key in ``~/.claude.json``, a
     per-directory "Do you trust the files in this folder?" dialog gated
-    by ``projects["<abs cwd>"].hasTrustDialogAccepted``. Neither fires a
-    ``PermissionRequest`` hook, so on a host-spawned (web-UI-driven)
-    session there is nobody at the terminal to answer them: Claude hangs
-    and the web UI shows nothing. This is acute with
-    per-session git worktrees, which hand Claude a brand-new —
-    therefore untrusted — directory on every session.
+    by ``projects["<abs cwd>"].hasTrustDialogAccepted``, and the
+    "Try the new fullscreen renderer?" upsell gated by the top-level
+    ``fullscreenUpsellSeenCount``. None fires a ``PermissionRequest``
+    hook, so on a host-spawned (web-UI-driven) session there is nobody at
+    the terminal to answer them: Claude hangs and the web UI shows
+    nothing. This is acute with per-session git worktrees, which hand
+    Claude a brand-new — therefore untrusted — directory on every session.
 
-    Seed both gating keys idempotently so the launch never blocks. Only
-    those two keys are written; all other ``~/.claude.json`` state (the
+    Each renders *instead of* the input box, so the cost is not merely a
+    stalled boot: :func:`_wait_for_claude_prompt_ready` polls for a
+    composer glyph that never arrives, and the first web-UI message is
+    dropped when it times out.
+
+    Seed all three gating keys idempotently so the launch never blocks.
+    Only those keys are written; all other ``~/.claude.json`` state (the
     user's own onboarding choices, project history, MCP config, OAuth
-    account) is preserved, and the file is left untouched when both keys
-    are already set. This deliberately does NOT skip per-tool permission
+    account) is preserved, and the file is left untouched when they are
+    already set. This deliberately does NOT skip per-tool permission
     prompts — those still route to the web UI via the ``PermissionRequest``
     hook; only the unhookable startup gates are pre-accepted.
 
@@ -1139,6 +1154,17 @@ def ensure_claude_workspace_trusted(workspace: Path) -> None:
     # has never run Claude Code interactively.
     if data.get("hasCompletedOnboarding") is not True:
         data["hasCompletedOnboarding"] = True
+        changed = True
+
+    # Fullscreen-renderer upsell gate. Unlike the two booleans this is a
+    # counter Claude increments each time it shows the modal, so "accepted"
+    # means "seen often enough" — raise it rather than set a flag. A
+    # non-int (hand-edited or corrupt) is treated as unset and overwritten:
+    # the value is Claude's own display bookkeeping, not user intent, so
+    # there is nothing here worth failing the launch to preserve.
+    seen_count = data.get("fullscreenUpsellSeenCount")
+    if not isinstance(seen_count, int) or seen_count < _CLAUDE_UPSELL_RETIRED_COUNT:
+        data["fullscreenUpsellSeenCount"] = _CLAUDE_UPSELL_RETIRED_COUNT
         changed = True
 
     # Per-directory trust gate. Claude keys its ``projects`` map by the

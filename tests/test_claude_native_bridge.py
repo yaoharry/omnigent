@@ -24,6 +24,7 @@ import pytest
 from omnigent import claude_native_bridge, native_cost_popup
 from omnigent.claude_native_bridge import (
     _BACKGROUND_TASK_FIELD_MAX_CHARS,
+    _CLAUDE_UPSELL_RETIRED_COUNT,
     _build_tools,
     _claude_prompt_rendered,
     _escape_unsupported_slash_command,
@@ -6480,6 +6481,9 @@ def test_ensure_trusted_creates_config_when_missing(
     # Per-directory trust gate, keyed by the RESOLVED absolute path —
     # without this Claude shows "Do you trust the files in this folder?".
     assert data["projects"][str(workspace.resolve())]["hasTrustDialogAccepted"] is True
+    # Fullscreen-renderer upsell gate — without this Claude renders a
+    # "Try the new fullscreen renderer?" choice modal instead of the input box.
+    assert data["fullscreenUpsellSeenCount"] == _CLAUDE_UPSELL_RETIRED_COUNT
 
 
 def test_ensure_trusted_preserves_existing_state(
@@ -6544,6 +6548,7 @@ def test_ensure_trusted_idempotent_does_not_rewrite(
     workspace.mkdir(parents=True)
     already = {
         "hasCompletedOnboarding": True,
+        "fullscreenUpsellSeenCount": _CLAUDE_UPSELL_RETIRED_COUNT,
         "projects": {str(workspace.resolve()): {"hasTrustDialogAccepted": True}},
     }
     # Compact, no indentation — distinct from the helper's indent=2 output.
@@ -6554,6 +6559,52 @@ def test_ensure_trusted_idempotent_does_not_rewrite(
 
     # Byte-identical → the helper detected no change and never wrote.
     assert config_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "existing,expected",
+    [
+        # Never shown: absent key. The common host case.
+        (None, _CLAUDE_UPSELL_RETIRED_COUNT),
+        # Partly shown: a real profile mid-upsell, still below Claude's cap
+        # and therefore still able to block a launch — must be raised.
+        (3, _CLAUDE_UPSELL_RETIRED_COUNT),
+        # Corrupt/hand-edited: not a count at all, so it cannot be compared
+        # against the cap. Treated as unset rather than raising, since this
+        # is Claude's display bookkeeping and no user intent is lost.
+        ("many", _CLAUDE_UPSELL_RETIRED_COUNT),
+        # Already retired past our value — left exactly as found, so a
+        # future Claude that counts higher is never walked backwards.
+        (_CLAUDE_UPSELL_RETIRED_COUNT + 7, _CLAUDE_UPSELL_RETIRED_COUNT + 7),
+    ],
+)
+def test_ensure_trusted_retires_fullscreen_upsell(
+    existing: object,
+    expected: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The fullscreen-renderer upsell is retired from every starting state.
+
+    Claude Code shows a blocking "Try the new fullscreen renderer?" choice
+    modal until ``fullscreenUpsellSeenCount`` reaches an internal cap. It
+    renders instead of the composer, fires no hook, and nobody is at a
+    host-spawned session's terminal to answer it — so the readiness gate
+    polls for a glyph that never arrives and drops the first web-UI
+    message. Unlike the two boolean gates this is a counter, so every
+    starting state matters: absent, mid-upsell, corrupt, already-higher.
+    """
+    config_path = _redirect_home(monkeypatch, tmp_path / "home")
+    workspace = tmp_path / "worktrees" / "feature-upsell"
+    workspace.mkdir(parents=True)
+    if existing is not None:
+        config_path.write_text(json.dumps({"fullscreenUpsellSeenCount": existing}))
+
+    ensure_claude_workspace_trusted(workspace)
+
+    data = json.loads(config_path.read_text())
+    assert data["fullscreenUpsellSeenCount"] == expected
 
 
 @pytest.mark.parametrize(

@@ -842,6 +842,9 @@ def _seed_onboarded_claude_home(home_dir: Path, workspace: str) -> None:
         json.dumps(
             {
                 "hasCompletedOnboarding": True,
+                # Retire the "Try the new fullscreen renderer?" modal, which
+                # renders instead of the composer and would hang a real launch.
+                "fullscreenUpsellSeenCount": 1000,
                 "theme": "dark",
                 "lastOnboardingVersion": "2.0.0",
                 "projects": {
