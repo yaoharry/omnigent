@@ -310,3 +310,22 @@ def test_load_skill_tool_accepts_namespaced_alias(tmp_path: Path, tool_ctx: Tool
     tool = LoadSkillTool([skill])
     result = tool.invoke(json.dumps({"name": "myplugin:brand-review"}), tool_ctx)
     assert result == "Review the brand."
+
+
+def test_init_survives_deleted_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    A runner outliving its working directory (a deleted worktree) makes
+    ``Path.cwd()`` raise. Construction must degrade to the bundled skills
+    rather than propagating, because the caller is building a tool list and
+    would otherwise fail the whole session.
+    """
+
+    def _boom() -> Path:
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(Path, "cwd", staticmethod(_boom))
+    bundled = SkillSpec(name="only-bundled", description="d", content="c")
+
+    tool = LoadSkillTool([bundled])
+
+    assert [s.name for s in tool.skills] == ["only-bundled"]
