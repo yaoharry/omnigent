@@ -46,7 +46,6 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from omnigent._platform import normalize_interactive_shells
-from omnigent.acp_cli_harnesses import ACP_CLI_HARNESSES
 from omnigent.debug_logging import (
     debug_event,
     phase_scope,
@@ -66,13 +65,10 @@ from omnigent.harness_aliases import (
     is_native_harness,
     native_terminal_name,
 )
-from omnigent.harness_availability import CODEX_CANONICAL_HARNESSES
 from omnigent.harness_capabilities import InstructionDelivery
 from omnigent.harness_plugins import (
     harness_capabilities,
-    load_object,
     model_env_keys,
-    spawn_env_builders,
 )
 from omnigent.inner.native_attachments import (
     framework_notice_block,
@@ -103,6 +99,7 @@ from omnigent.runner.background_titles import (
 )
 from omnigent.runner.background_titles.service import BACKGROUND_TITLE_MAX_PROMPT_CHARS
 from omnigent.runner.codex.goal import CodexGoalRunner
+from omnigent.runner.launch import _build_spawn_env_from_spec
 from omnigent.runner.launch_failure import FailureDiagnosis, classify_terminal_failure
 from omnigent.runner.mcp_execution_registry import (
     McpExecutionConflict,
@@ -175,7 +172,6 @@ from omnigent.runner.subagent_routing import (
     forget_session_routing_class,
     remember_session_routing_class,
     routing_class_from_snapshot,
-    session_routing_class,
 )
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager, NoLiveHarnessError
 from omnigent.runtime.prompt import (
@@ -198,6 +194,9 @@ from omnigent.tools.builtins.load_skill import (
 from omnigent.util.json_types import JsonObject as _JsonObject
 
 _logger = logging.getLogger(__name__)
+
+# Compatibility export while callers migrate to the launch module.
+_HARNESS_MODEL_ENV_KEY = model_env_keys()
 
 # Allow process termination and forwarder cleanup to finish before DELETE proceeds.
 _SESSION_INIT_CANCEL_TIMEOUT_S = 20.0
@@ -2999,9 +2998,9 @@ def create_runner_app(
             return await call_next(request)
 
     if terminal_registry is not None:
-        from omnigent.runtime import _globals as _rt_globals
+        from omnigent.runtime import get_services
 
-        _rt_globals._terminal_registry = terminal_registry
+        get_services().terminal_registry = terminal_registry
 
     _version_cache: dict[str, int] = {}  # conversation_id → last seen agent_version
     _spec_cache: dict[str, _SpecEntry] = {}  # agent_id → cached AgentSpec for terminal tools
@@ -13473,7 +13472,7 @@ def create_runner_app(
             spec.executor.profile or (spec.executor.config or {}).get("profile")
         )
         if auth is None and not _spec_has_legacy_profile:
-            from omnigent.runtime.workflow import _load_global_auth
+            from omnigent.harnesses.config.providers import _load_global_auth
 
             global_auth = _load_global_auth()
             if isinstance(global_auth, DatabricksAuth):
@@ -13973,46 +13972,7 @@ async def _resolve_harness_config(
     return "runner-test-default", None
 
 
-# The per-harness env var that carries the model into the spawn-env (SDK /
-# in-process) harnesses. Used to apply a per-session ``/model`` override at
-# highest precedence — see :func:`_build_spawn_env_from_spec`.
-_HARNESS_MODEL_ENV_KEY: dict[str, str] = {
-    "claude-sdk": "HARNESS_CLAUDE_SDK_MODEL",
-    "codex": "HARNESS_CODEX_MODEL",
-    "pi": "HARNESS_PI_MODEL",
-    "openai-agents": "HARNESS_OPENAI_AGENTS_MODEL",
-    "cursor": "HARNESS_CURSOR_MODEL",
-    # cursor-native is intentionally omitted here (and from
-    # model_override._SDK_MODEL_OVERRIDE_HARNESSES): like the other native CLIs
-    # (claude-native, codex-native) it receives the model as a ``--model`` argv
-    # at terminal launch (see ``_auto_create_cursor_terminal``), not via a
-    # spawn-env var. ``harness_supports_model_override`` already returns True for
-    # it because it is a native harness.
-    "antigravity": "HARNESS_ANTIGRAVITY_MODEL",
-    # Kimi reads ``HARNESS_KIMI_MODEL`` in
-    # :mod:`omnigent.inner.kimi_executor`; without this mapping a per-session
-    # ``/model`` override would silently drop on the kimi harness path.
-    "kimi": "HARNESS_KIMI_MODEL",
-    "qwen": "HARNESS_QWEN_MODEL",
-    "goose": "HARNESS_GOOSE_MODEL",
-    "copilot": "HARNESS_COPILOT_MODEL",
-}
-_HARNESS_MODEL_ENV_KEY = model_env_keys()
-
-
-class _SpawnEnvBuilder(Protocol):
-    def __call__(
-        self,
-        spec: object,
-        *,
-        cwd: Path | None,
-        workdir: Path | None,
-    ) -> dict[str, str]:
-        raise NotImplementedError
-
-
-class _ModelCopyValue(Protocol):
-    def model_copy(self, *, update: Mapping[str, object]) -> object: ...
+# ── Session routing setup ──────────────────────────────────────────────
 
 
 async def _ensure_session_subagent_router(
@@ -14022,283 +13982,22 @@ async def _ensure_session_subagent_router(
     server_client: httpx.AsyncClient | None,
     routing_class: SessionRoutingClass | None = None,
 ) -> None:
-    """Start this session's subagent-routing endpoint.
-
-    Only for the SDK harness families: the native terminals know their own
-    bridge directory and start the router from their launch paths, where
-    the harness's hooks are also pointed at it.
-
-    Started for Smart Routing sessions only: a plain session must not carry
-    the loopback server, its on-disk bearer token, or an in-process hook on
-    every ``Task`` for a verdict the server never routes. On the codex SDK
-    arm the advertisement also turns generated hooks and the routed-spawn
-    tool pre-approvals on, and those spawns already route through
-    session-create, so there it takes auto-harness.
-
-    Never raises: ``ensure_session_router_quietly`` owns the bridge-dir
-    resolution too, so a hostile or pre-existing ``$TMPDIR`` root cannot
-    fail session creation for harnesses that do not even use routing.
-
-    :param session_id: Session/conversation identifier.
-    :param harness: Canonical harness name, e.g. ``"claude-sdk"``.
-    :param server_client: Runner→server client the relay forwards on.
-        ``None`` (in-process tests) skips the start.
-    :param routing_class: The session's Smart Routing class. ``None``
-        reads whatever was stamped at session init, which for an unknown
-        session is the plain class.
-    """
+    """Start the session's subagent-routing endpoint when routing is enabled."""
     from omnigent.runner.subagent_routing import ensure_session_router_quietly
 
     if is_native_harness(harness):
         return
-    resolved = routing_class if routing_class is not None else session_routing_class(session_id)
+    resolved = routing_class
+    if resolved is None:
+        from omnigent.runner.subagent_routing import session_routing_class
+
+        resolved = session_routing_class(session_id)
     ensure_session_router_quietly(
         session_id,
         server_client=server_client,
         harness=harness,
         routing_class=resolved,
     )
-
-
-def _build_spawn_env_from_spec(
-    spec: AgentSpec,
-    harness: str,
-    *,
-    cwd: Path | None = None,
-    workdir: Path | None = None,
-    model_override: str | None = None,
-    session_id: str | None = None,
-    resource_registry: SessionResourceRegistry | None = None,
-) -> dict[str, str] | None:
-    """Build spawn-env from spec — mirrors workflow.py's helpers.
-
-    :param spec: The resolved agent spec.
-    :param harness: Requested harness, including any ``acp:<slug>`` selection.
-    :param cwd: Runtime working directory for harnesses that need it.
-    :param workdir: Bundle workdir, threaded to the builders.
-    :param session_id: Session/conversation id, used to hand the harness
-        this session's subagent-routing endpoint. ``None`` omits it.
-    :param model_override: The per-session ``/model`` override, e.g.
-        ``"claude-sonnet-4-6"``, or ``None``. When set, it overrides the
-        ``HARNESS_<H>_MODEL`` the builder baked in (spec model / provider
-        default / catalog default) so ``/model`` actually takes effect on
-        the SDK / in-process harnesses. (The native CLIs honor the override
-        via ``--model`` in :func:`_build_claude_native_base_args`; the
-        SDK harnesses have no such arg, so the override must land in the
-        env var here.)
-    :returns: The spawn-env dict, or ``None`` for native / unknown harnesses.
-    """
-    # Namespaced generic-ACP ids (``acp:<slug>``) canonicalize to ``acp`` so the
-    # dispatch, model-key lookup, and logging below all key off the base harness;
-    # the concrete agent's slug must also reach the command and model resolvers.
-    requested_harness = harness
-    harness = canonicalize_harness(harness) or harness
-    if requested_harness.startswith("acp:"):
-        spec = dataclasses.replace(
-            spec,
-            executor=dataclasses.replace(
-                spec.executor, config={**spec.executor.config, "harness": requested_harness}
-            ),
-        )
-    from omnigent.sandbox.copy_on_write import validate_copy_on_write_harness
-
-    validate_copy_on_write_harness(getattr(spec, "os_env", None), harness)
-    effective_spec = spec
-    from omnigent.inference_config import load_runtime_inference_config, parse_inference_config
-
-    has_inference_bindings = bool(parse_inference_config(load_runtime_inference_config()))
-    if has_inference_bindings and dataclasses.is_dataclass(spec):
-        declared_harness = str(spec.executor.config.get("harness") or "")
-        identity = (
-            requested_harness
-            if requested_harness.startswith("acp:")
-            else declared_harness
-            if harness == "acp" and declared_harness.startswith("acp:")
-            else harness
-        )
-        effective_spec = dataclasses.replace(
-            spec,
-            executor=dataclasses.replace(
-                spec.executor,
-                config={**spec.executor.config, "harness": identity},
-                model=model_override if model_override is not None else spec.executor.model,
-            ),
-        )
-    if model_override is not None:
-        executor = getattr(spec, "executor", None)
-        if (
-            harness == "acp"
-            and not has_inference_bindings
-            and dataclasses.is_dataclass(spec)
-            and dataclasses.is_dataclass(executor)
-        ):
-            effective_spec = dataclasses.replace(
-                spec, executor=dataclasses.replace(spec.executor, model=model_override)
-            )
-        elif hasattr(spec, "model_copy") and hasattr(executor, "model_copy"):
-            copied_executor = cast(_ModelCopyValue, executor).model_copy(
-                update={"model": model_override}
-            )
-            effective_spec = cast(
-                AgentSpec,
-                cast(_ModelCopyValue, spec).model_copy(update={"executor": copied_executor}),
-            )
-    acp_default_model: str | None = None
-    if harness == "acp":
-        from omnigent.models.model_catalog import _acp_launch_model, validate_acp_model
-
-        policy_spec = effective_spec if has_inference_bindings else spec
-        acp_default_model = _acp_launch_model(policy_spec)
-        validate_acp_model(policy_spec, acp_default_model)
-        validate_acp_model(policy_spec, model_override)
-    try:
-        from omnigent.runtime.workflow import (
-            _build_acp_cli_spawn_env,
-            _build_acp_spawn_env,
-            _build_antigravity_spawn_env,
-            _build_claude_sdk_spawn_env,
-            _build_codex_spawn_env,
-            _build_copilot_spawn_env,
-            _build_cursor_spawn_env,
-            _build_goose_spawn_env,
-            _build_hermes_spawn_env,
-            _build_kimi_spawn_env,
-            _build_openai_agents_sdk_spawn_env,
-            _build_pi_spawn_env,
-            _build_qwen_spawn_env,
-        )
-
-        if harness == "claude-sdk":
-            env = _build_claude_sdk_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness == "codex":
-            env = _build_codex_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-            env["HARNESS_CODEX_SKILLS_DIR"] = (
-                str(resource_registry.codex_skills_dir(session_id))
-                if resource_registry is not None and session_id is not None
-                else ""
-            )
-        elif harness == "pi":
-            env = _build_pi_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness == "openai-agents":
-            env = _build_openai_agents_sdk_spawn_env(effective_spec)
-        elif harness == "cursor":
-            env = _build_cursor_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness == "antigravity":
-            env = _build_antigravity_spawn_env(effective_spec)
-        elif harness == "kimi":
-            env = _build_kimi_spawn_env(effective_spec, cwd=cwd)
-        elif harness == "hermes":
-            env = _build_hermes_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness == "qwen":
-            env = _build_qwen_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness == "goose":
-            env = _build_goose_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness == "acp":
-            env = _build_acp_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-            # Reset uses the original default even when the process launched
-            # with a session override. Empty defers to the vendor's first model.
-            env["HARNESS_ACP_DEFAULT_MODEL"] = acp_default_model or ""
-        elif harness == "copilot":
-            env = _build_copilot_spawn_env(effective_spec, cwd=cwd, workdir=workdir)
-        elif harness in ACP_CLI_HARNESSES:
-            # Builtin ACP CLI harnesses (one catalog row each) share a single
-            # builder; the row supplies the command, label, and install info.
-            env = _build_acp_cli_spawn_env(
-                effective_spec, harness=harness, cwd=cwd, workdir=workdir, session_id=session_id
-            )
-        else:
-            builder_path = spawn_env_builders().get(harness)
-            if builder_path is not None:
-                builder = load_object(builder_path)
-                if not callable(builder):
-                    raise TypeError(f"spawn environment builder {builder_path!r} is not callable")
-                env = cast(_SpawnEnvBuilder, builder)(
-                    effective_spec,
-                    cwd=cwd,
-                    workdir=workdir,
-                )
-            else:
-                # Native terminal harnesses and unknown harnesses build env elsewhere.
-                return None
-    except ImportError:
-        return None
-
-    if env is not None:
-        from omnigent.inner.agent_env import desktop_session_passthrough, strip_desktop_session_env
-
-        env = strip_desktop_session_env(env)
-        env.update(desktop_session_passthrough(effective_spec.os_env))
-
-    if (
-        env is not None
-        and spec.os_env is not None
-        and spec.os_env.sandbox is not None
-        and any(p.copy_on_write for p in spec.os_env.sandbox.write_path_specs)
-    ):
-        if resource_registry is None or session_id is None:
-            raise ValueError("copy_on_write harnesses require a session resource registry")
-        from omnigent.sandbox.copy_on_write import (
-            SHARED_ENVIRONMENT_VAR,
-            export_shared_environment,
-        )
-
-        environment = resource_registry.resolve_environment(
-            session_id, DEFAULT_ENVIRONMENT_ID, spec
-        )
-        policy = getattr(environment, "sandbox", None)
-        if policy is None:
-            raise ValueError("copy_on_write requires a local sandbox environment")
-        environment.prepare_sandbox(policy)
-        env[SHARED_ENVIRONMENT_VAR] = export_shared_environment(policy)
-
-    # Point the harness process at this session's subagent-routing endpoint
-    # when one is running (started at session init). Scoped to *harness* so a
-    # codex executor beneath a claude session never sees the codex router vars
-    # carrying the parent's session id. Empty when the session has no router.
-    if env is not None and session_id:
-        from omnigent.runner.subagent_routing import session_router_env
-
-        env.update(session_router_env(session_id, harness))
-        if harness in CODEX_CANONICAL_HARNESSES:
-            # A Smart Routing turn or spawn can land on a gateway arm codex's
-            # bundled catalog has no entry for, so the session replaces that
-            # catalog. Plain sessions get nothing here and never pay the
-            # ``codex debug models`` probe.
-            from omnigent.inner.codex_executor import codex_extended_catalog_env
-
-            env.update(
-                codex_extended_catalog_env(session_routing_class(session_id).routing_enabled)
-            )
-
-    # Per-session ``/model`` override wins over everything the builder baked
-    # into HARNESS_<H>_MODEL. Without this, `/model` is recorded in the
-    # readout but the turn still uses the provider/catalog default.
-    if model_override and env is not None:
-        model_key = _HARNESS_MODEL_ENV_KEY.get(harness)
-        if model_key is not None:
-            env[model_key] = model_override
-
-    # Routing visibility: log the resolved gateway target so operators can
-    # confirm which provider a turn actually hits (api.anthropic.com /
-    # api.openai.com for a key, vs a Databricks profile). Logged here in the
-    # runner process (INFO is emitted) rather than the harness subprocess
-    # (which suppresses inner.* INFO). ``base_url`` is empty for the legacy
-    # ``profile:`` path (resolved downstream by ucode); the profile still
-    # identifies the Databricks target.
-    if env is not None:
-        prefix = f"HARNESS_{harness.upper().replace('-', '_')}"
-        _logger.info(
-            "%s gateway routing: gateway=%s base_url=%s profile=%s model=%s",
-            harness,
-            env.get(f"{prefix}_GATEWAY"),
-            # A harness that carries per-family URLs (pi) sets only the plural
-            # ``_BASE_URLS`` JSON; without the fallback it logs base_url=None.
-            env.get(f"{prefix}_GATEWAY_BASE_URL") or env.get(f"{prefix}_GATEWAY_BASE_URLS"),
-            env.get(f"{prefix}_DATABRICKS_PROFILE"),
-            env.get(_HARNESS_MODEL_ENV_KEY.get(harness, f"{prefix}_MODEL")),
-            extra={"session_id": session_id},
-        )
-    return env
 
 
 # ── Agent-start policy gate ────────────────────────────────────────────

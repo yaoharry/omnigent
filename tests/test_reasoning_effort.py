@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from omnigent.runtime import get_services
 from omnigent.util.reasoning_effort import (
     ANTHROPIC_EFFORTS,
     CODEX_EFFORTS,
@@ -184,7 +185,7 @@ def test_routing_settings_effort_caps_reach_the_clamp() -> None:
             {"effort_caps": {"gpt-5.6-sol": {"fallback": "medium", "unsupported": ["xhigh"]}}}
         )
     )
-    with patch("omnigent.runtime._globals._caps", new=SimpleNamespace(routing_settings=settings)):
+    with patch.object(get_services(), "caps", new=SimpleNamespace(routing_settings=settings)):
         assert clamp_effort_for_model("xhigh", "databricks-gpt-5-6-sol") == "medium"
         # The configured table REPLACES the default, so GLM is no longer capped.
         assert clamp_effort_for_model("xhigh", "system.ai.glm-5-2") == "xhigh"

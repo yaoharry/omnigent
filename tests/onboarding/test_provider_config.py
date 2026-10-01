@@ -776,7 +776,7 @@ def test_bedrock_kind_rejected_for_non_native_harnesses() -> None:
     harness must raise rather than mis-configure.
     """
     from omnigent.errors import ErrorCode
-    from omnigent.runtime.workflow import configure_agent_harness_with_provider
+    from omnigent.harnesses.config.providers import configure_agent_harness_with_provider
 
     entry = load_providers(
         {

@@ -84,6 +84,7 @@ from omnigent.runner.app import (
     _normalize_turn_error,
     _resolve_harness_config,
 )
+from omnigent.runtime import get_services
 from omnigent.runtime.harnesses import _HARNESS_MODULES
 from omnigent.runtime.harnesses._executor_adapter import (
     _ORPHAN_RESYNC_THRESHOLD,
@@ -2115,7 +2116,7 @@ async def test_runner_background_turn_emits_failed_when_spawn_env_build_raises(
     # ``_build_spawn_env_from_spec`` imports this from workflow at call time,
     # so patching the workflow attribute reaches the runner's call site.
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._build_claude_sdk_spawn_env",
+        "omnigent.harnesses.config.spawn_env._build_claude_sdk_spawn_env",
         _raising_build,
     )
 
@@ -2209,7 +2210,7 @@ async def test_runner_failed_status_carries_setup_error_message(
         raise OmnigentError(raised_message, code=ErrorCode.INVALID_INPUT)
 
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._build_claude_sdk_spawn_env",
+        "omnigent.harnesses.config.spawn_env._build_claude_sdk_spawn_env",
         _raising_build,
     )
 
@@ -7229,11 +7230,10 @@ def test_native_relay_advertises_terminal_tools_per_spec_gate(
     """
     from omnigent.inner.datamodel import TerminalEnvSpec
     from omnigent.runner.tool_dispatch import _NATIVE_RELAY_BUILTIN_TOOLS
-    from omnigent.runtime import _globals as rt_globals
     from omnigent.terminals.registry import TerminalRegistry
     from omnigent.tools.manager import ToolManager
 
-    monkeypatch.setattr(rt_globals, "_terminal_registry", TerminalRegistry())
+    monkeypatch.setattr(get_services(), "terminal_registry", TerminalRegistry())
 
     terminals = {"bash": TerminalEnvSpec(command="bash")} if declares_terminals else None
     spec = AgentSpec(spec_version=1, terminals=terminals)
@@ -9657,7 +9657,7 @@ async def test_setup_base_exception_does_not_leave_active_turn(
         raise _SetupBoom("spawn-env aborted")
 
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._build_claude_sdk_spawn_env",
+        "omnigent.harnesses.config.spawn_env._build_claude_sdk_spawn_env",
         _raising_build,
     )
 

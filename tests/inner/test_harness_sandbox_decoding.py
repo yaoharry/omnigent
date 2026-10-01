@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from omnigent.harnesses.config.spawn_env import _serialize_os_env
 from omnigent.inner import bwrap_sandbox
 from omnigent.inner.credential_proxy import prepare_credential_proxy_runtime
 from omnigent.inner.datamodel import (
@@ -22,7 +23,6 @@ from omnigent.inner.datamodel import (
 )
 from omnigent.inner.os_env import _build_credential_proxy_parent_env
 from omnigent.inner.sandbox import resolve_sandbox
-from omnigent.runtime.workflow import _serialize_os_env
 
 _HARNESSES = [
     "acp",

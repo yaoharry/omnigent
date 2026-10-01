@@ -30,8 +30,10 @@ from omnigent.runtime.compaction import (
     count_tokens,
     summarize_history,
 )
+from omnigent.runtime.compaction_service import (
+    route_bare_model_for_compaction as _route_bare_model_for_compaction,
+)
 from omnigent.runtime.content_resolver import _resolve_file_id_block
-from omnigent.runtime.workflow import _route_bare_model_for_compaction
 from omnigent.spec.types import CompactionConfig, LLMConfig
 
 # ---------------------------------------------------------------------------
@@ -132,8 +134,8 @@ async def test_downscaled_images_preserve_compaction_boundaries(
     from types import SimpleNamespace
 
     from omnigent.inner.native_attachments import FRAMEWORK_NOTICE_BLOCK_TYPE
-    from omnigent.runtime import workflow
     from omnigent.runtime.compaction import _CompactionState
+    from omnigent.runtime.history import prepare_messages
     from omnigent.spec import AgentSpec
     from omnigent.spec.types import ExecutorSpec
 
@@ -144,12 +146,6 @@ async def test_downscaled_images_preserve_compaction_boundaries(
         bytes=3,
         content_type="image/png",
         source_metadata={"width": 6000, "height": 4000},
-    )
-    monkeypatch.setattr(
-        workflow, "get_file_store", lambda: SimpleNamespace(get=lambda file_id: stored)
-    )
-    monkeypatch.setattr(
-        workflow, "get_artifact_store", lambda: SimpleNamespace(get=lambda file_id: b"png")
     )
     older = _user_msg("older", "older image")
     older.data.content.extend(
@@ -167,7 +163,7 @@ async def test_downscaled_images_preserve_compaction_boundaries(
         _assistant_msg("reply3"),
     ]
     config = LLMConfig(model="test-model")
-    _, messages, _ = workflow._prepare_messages(
+    _, messages, _ = prepare_messages(
         AgentSpec(
             spec_version=1,
             name="test",
@@ -180,6 +176,8 @@ async def test_downscaled_images_preserve_compaction_boundaries(
         [],
         _CompactionState(context_window=None, last_summary=None, config=None, model=config.model),
         {},
+        file_store=SimpleNamespace(get=lambda file_id: stored),
+        artifact_store=SimpleNamespace(get=lambda file_id: b"png"),
     )
     assert len(messages) == len(history)
     assert len(older.data.content) == 3

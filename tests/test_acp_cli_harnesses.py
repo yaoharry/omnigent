@@ -30,9 +30,9 @@ from omnigent.harness_plugins import (
     install_specs,
     valid_harnesses,
 )
+from omnigent.harnesses.config.spawn_env import _build_acp_cli_spawn_env
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec
 from omnigent.onboarding.harness_install import ui_setup_steps
-from omnigent.runtime.workflow import _build_acp_cli_spawn_env
 from omnigent.spec.types import AgentSpec, ExecutorSpec
 
 _FAKE_ROW = AcpCliHarness(

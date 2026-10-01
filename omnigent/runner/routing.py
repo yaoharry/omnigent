@@ -37,9 +37,8 @@ def runner_dispatch_harness(spec: AgentSpec) -> str | None:
     """
     Return the runner-routed harness for an agent spec, if any.
 
-    Mirrors the harness selection in
-    :func:`omnigent.runtime.workflow._create_executor`: direct
-    executors return ``None`` unless they explicitly name a harness.
+    Resolve the executor's harness through the canonical registry.
+    Direct executors return ``None`` unless they name a registered harness.
 
     :param spec: Parsed agent spec from the agent cache.
     :returns: Harness key, e.g. ``"codex"``, when the executor is

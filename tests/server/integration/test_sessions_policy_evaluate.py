@@ -33,7 +33,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
-from omnigent.runtime import get_caps, session_stream
+from omnigent.runtime import get_caps, get_services, session_stream
 from omnigent.runtime.caps import RuntimeCaps
 from omnigent.server.routes import sessions as sessions_routes
 from omnigent.spec.types import FunctionPolicySpec, FunctionRef
@@ -874,7 +874,7 @@ async def test_tool_call_ask_forwards_popup_event_to_runner(
     # itself touches the runner snapshot path); the forward falls back to
     # the global runner client when no runner is bound for the session.
     capturing = CapturingRunnerClient()
-    monkeypatch.setattr("omnigent.runtime._globals._runner_client", capturing)
+    monkeypatch.setattr(get_services(), "runner_client", capturing)
 
     drain = asyncio.create_task(_drain_elicitation_id(session_id))
     await asyncio.sleep(0.05)

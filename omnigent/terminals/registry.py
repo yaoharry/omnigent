@@ -1,37 +1,13 @@
-"""Per-AP-process registry of conversation-scoped tmux terminals.
+"""Process-local registry of conversation-scoped tmux terminals.
 
-Replaces the legacy OSC 633 / pexpect ``TerminalManagerRegistry``
-documented in ``designs/PERSISTENT_TERMINAL_RESEARCH.md``. The legacy
-class kept ``dict[conv_id, TerminalManager]`` where ``TerminalManager``
-owned ``Shell`` (pexpect-based) instances keyed by ``shell_name``.
+Terminals use ``(conversation_id, terminal_name, session_key)`` keys, so a
+conversation can open independent shells with the same configured name.
+The runner owns their normal lifecycle; ``runtime.init`` also creates a
+registry for embedded tools and the server's in-process attach fallback.
 
-Per ``designs/OMNIGENT_TERMINAL_BRIDGE.md`` §4.2, this rewrite swaps to:
-
-- One terminal abstraction (``inner.terminal.TerminalInstance``) for
-  the whole project — tmux-based.
-- Three-level keying: ``(conversation_id, terminal_name, session_key)``.
-  Multiple session keys per terminal name allow independent tmux
-  sessions of the same configured terminal (e.g. ``bash:s1`` and
-  ``bash:s2`` running in parallel).
-- No idle reaper: terminals are explicit-launch only and the LLM is
-  expected to ``sys_terminal_close`` when done. Omnigent shutdown still
-  closes everything; per-conversation cleanup runs from the workflow's
-  finally block.
-
-The registry is constructed once at Omnigent startup
-(``omnigent.runtime._globals.init``) and accessed via
-``omnigent.runtime.get_terminal_registry()`` from tools and the
-workflow.
-
-**Locking.** A ``threading.Lock`` (not ``asyncio.Lock``) protects the
-map. Tool invocations run on background threads via
-``asyncio.to_thread`` (see ``runtime/workflow.py:1787``); each thread
-spins up its own ``asyncio.run`` loop to drive the registry's async
-methods. An ``asyncio.Lock`` would be bound to whichever loop created
-it and would silently fail to synchronize concurrent invocations from
-different threads. The threading lock is held only for short map
-mutations (no tmux I/O underneath); slow tmux subprocess calls happen
-outside the lock.
+A threading lock protects short map mutations because tool calls can run
+on different threads and event loops. Tmux I/O happens outside the lock.
+Closing a session or shutting down its owner releases the terminals.
 """
 
 from __future__ import annotations

@@ -520,11 +520,9 @@ def _sqlite_db_template(
 def runtime_init(
     db_uri: str,
     tmp_path: Path,
-    mock_llm: ControllableMockClient,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
     """
-    Initialize the runtime with real stores and mock LLM patched in.
+    Initialize the runtime with real stores.
 
     Replaces the former ``task_store`` fixture now that the tasks table
     has been removed. Callers that depended on ``task_store`` for runtime
@@ -532,9 +530,6 @@ def runtime_init(
 
     :param db_uri: SQLite connection URI from the ``db_uri`` fixture.
     :param tmp_path: Pytest temp directory for artifacts and cache.
-    :param mock_llm: Controllable mock LLM client for the test.
-    :param monkeypatch: Pytest fixture for patching the LLM client
-        factory in the workflow module.
     """
     agent_store = SqlAlchemyAgentStore(db_uri)
     conversation_store = SqlAlchemyConversationStore(db_uri)
@@ -550,11 +545,6 @@ def runtime_init(
         agent_cache=agent_cache,
         file_store=file_store,
         artifact_store=artifact_store,
-    )
-    # Patch the LLM client so the mock is used everywhere.
-    monkeypatch.setattr(
-        "omnigent.runtime.workflow._get_llm_client",
-        lambda: mock_llm,
     )
     yield
 
@@ -603,15 +593,13 @@ def _first_party_origin_on_asgi(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture()
 def app(runtime_init: None, db_uri: str, tmp_path: Path) -> FastAPI:
     """
-    Build the FastAPI app with real stores and real workflow
-    execution (mock LLM is patched in via runtime_init fixture).
+    Build the FastAPI app with real stores and session routes.
 
     No legacy ``/v1/responses`` router — that path was removed
     with the DBOS execution layer. Tests that still need to drive
     a session end-to-end use ``/v1/sessions``.
 
-    :param runtime_init: Fixture that initializes the runtime and
-        patches the mock LLM.
+    :param runtime_init: Fixture that initializes process runtime services.
     :param db_uri: SQLite database URI.
     :param tmp_path: Pytest temp directory for artifacts and cache.
     """
@@ -638,16 +626,7 @@ async def _app_client(
     mock_llm: ControllableMockClient,
     tmp_path: Path,
 ) -> AsyncIterator[httpx.AsyncClient]:
-    """Serve a real app and drain its harness/relay work before the loop closes."""
-    # Initialize the HarnessProcessManager for tests that hit the
-    # fallback executor path (when _runner_client is not set).
-    from omnigent.runtime import set_harness_process_manager
-    from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
-
-    pm = HarnessProcessManager(tmp_parent=tmp_path / "harness_pm")
-    await pm.start()
-    set_harness_process_manager(pm)
-
+    """Serve a real app and drain relay work before the loop closes."""
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
@@ -668,8 +647,6 @@ async def _app_client(
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
         sessions_routes._runner_relay_tasks.clear()
-        set_harness_process_manager(None)
-        await pm.shutdown()
 
 
 @pytest_asyncio.fixture()

@@ -1835,7 +1835,9 @@ def _resolve_llm_model(
         from omnigent.runtime import get_agent_cache
 
         if agent_store is None:
-            from omnigent.runtime._globals import _agent_store
+            from omnigent.runtime import get_services
+
+            _agent_store = get_services().agent_store
 
             agent_store = _agent_store
         if agent_store is None:
@@ -1914,7 +1916,9 @@ def _resolve_harness_impl(
         from omnigent.runtime import get_agent_cache
 
         if agent_store is None:
-            from omnigent.runtime._globals import _agent_store
+            from omnigent.runtime import get_services
+
+            _agent_store = get_services().agent_store
 
             agent_store = _agent_store
         if agent_store is None:
@@ -1933,7 +1937,7 @@ def _resolve_harness_impl(
         # (a gpt head runs codex, not the claude-sdk brain). Falls back to the
         # brain harness when the head declares none or can't be matched.
         if conv.sub_agent_name:
-            from omnigent.runtime.workflow import _find_spec_by_name
+            from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
             sub = _find_spec_by_name(loaded.spec, conv.sub_agent_name)
             if sub is not None:
@@ -7993,7 +7997,9 @@ async def _relay_response_policy_deny_reason(
     :param text: The joined assistant text segment about to persist.
     :returns: The deny reason when an output policy DENYs, else ``None``.
     """
-    from omnigent.runtime._globals import _agent_store
+    from omnigent.runtime import get_services
+
+    _agent_store = get_services().agent_store
 
     if _agent_store is None:
         # Fail open, but loudly: a mis-initialized runtime would otherwise
@@ -9560,7 +9566,7 @@ def _resolve_subagent_spec(
     """
     if agent_cache is None:
         return None
-    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
     try:
         parent_spec = agent_cache.load(
@@ -9615,7 +9621,7 @@ def _require_declared_subagent(
     """
     if agent_cache is None:
         return
-    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
     try:
         parent_spec = agent_cache.load(

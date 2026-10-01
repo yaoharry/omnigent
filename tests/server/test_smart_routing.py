@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from omnigent.runtime import get_services
 from omnigent.server.routing_backend import RoutingBackends
 from omnigent.server.smart_routing import (
     _AUTO_ROUTING_HARNESSES,
@@ -513,8 +514,9 @@ async def test_route_turn_uses_caps_routing_client() -> None:
         harness="claude-sdk",
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch(
-        "omnigent.runtime._globals._caps",
+    with patch.object(
+        get_services(),
+        "caps",
         new=caps,
     ):
         model, v = await route_turn(
@@ -531,8 +533,9 @@ async def test_route_turn_uses_caps_routing_client() -> None:
 @pytest.mark.asyncio
 async def test_route_turn_returns_none_when_no_client() -> None:
     caps = FakeCaps(routing_client=None)
-    with patch(
-        "omnigent.runtime._globals._caps",
+    with patch.object(
+        get_services(),
+        "caps",
         new=caps,
     ):
         model, _v = await route_turn("claude-sdk", "hello")
@@ -574,7 +577,7 @@ async def test_route_turn_uses_runner_catalog_when_available() -> None:
     mock_client.get = AsyncMock(return_value=mock_response)
 
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, _v = await route_turn(
             "claude-sdk",
             "complex task",
@@ -613,7 +616,7 @@ async def test_route_turn_prefers_the_callers_session_vocabulary() -> None:
     routing_client = FakeRoutingClient(expected)
 
     caps = FakeCaps(routing_client=routing_client)
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, _v = await route_turn(
             "claude-native",
             "complex task",
@@ -654,7 +657,7 @@ async def test_route_turn_drops_out_of_family_catalog_models() -> None:
     client = FakeRoutingClient(
         RoutingResult(model="databricks-gpt-5-5", rationale="gpt task", harness="codex-native")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         model, _v = await route_turn(
             "codex-native",
             "narrow fix",
@@ -696,7 +699,7 @@ async def test_route_turn_offers_and_applies_a_glm_pick_on_codex() -> None:
     client = FakeRoutingClient(
         RoutingResult(model="databricks-glm-5-2", rationale="delegate arm", harness="codex-native")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         model, _v = await route_turn(
             "codex-native",
             "refactor the parser",
@@ -729,7 +732,7 @@ async def test_route_turn_falls_back_to_static_when_runner_unavailable() -> None
         harness="claude-sdk",
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, _v = await route_turn(
             "claude-sdk",
             "hello",
@@ -1460,7 +1463,7 @@ async def test_route_session_harness_surfaces_router_error_detail() -> None:
             return None
 
     caps = FakeCaps(routing_client=_FailingClient())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "hi", session_id="conv_123", runner_client=_catalog_client()
         )
@@ -1483,7 +1486,7 @@ async def test_route_session_harness_picks_harness_and_model() -> None:
         harness="claude-sdk",
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, verdict, error = await route_session_harness(
             "refactor the auth module",
             session_id="conv_123",
@@ -1509,7 +1512,7 @@ async def test_route_session_harness_passes_discovered_sdk_harnesses() -> None:
             return RoutingResult(model="databricks-claude-haiku-4-5", rationale="x", harness="pi")
 
     caps = FakeCaps(routing_client=_CapturingClient())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         await route_session_harness(
             "quick task", session_id="conv_123", runner_client=_catalog_client()
         )
@@ -1553,7 +1556,7 @@ async def test_route_session_harness_uses_catalog_session_id_for_fetch() -> None
             RoutingResult(model="m1", rationale="x", harness="claude-sdk")
         )
     )
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         await route_session_harness(
             "hi",
             session_id="child_sess",
@@ -1607,7 +1610,7 @@ async def test_route_session_harness_uses_live_catalog_skips_absent_harness() ->
             )
 
     caps = FakeCaps(routing_client=_CapturingClient())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, _error = await route_session_harness(
             "hello",
             session_id="conv_test",
@@ -1660,7 +1663,7 @@ async def test_route_session_harness_maps_worker_names_to_harnesses() -> None:
             )
 
     caps = FakeCaps(routing_client=_CapturingClient())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "refactor everything",
             session_id="conv_child",
@@ -1706,7 +1709,7 @@ async def test_route_session_harness_falls_back_when_catalog_has_only_self() -> 
         )
     )
     caps = FakeCaps(routing_client=routing_client)
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "hello",
             session_id="conv_child",
@@ -1724,7 +1727,7 @@ async def test_route_session_harness_falls_back_when_catalog_has_only_self() -> 
 async def test_route_session_harness_returns_none_when_no_client() -> None:
     """route_session_harness returns (None, None, None, error) when no routing client."""
     caps = FakeCaps(routing_client=None)
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, verdict, error = await route_session_harness("hello")
     assert harness is None
     assert model is None
@@ -1736,7 +1739,7 @@ async def test_route_session_harness_returns_none_when_no_client() -> None:
 async def test_route_session_harness_returns_none_for_empty_message() -> None:
     """route_session_harness returns (None, None, None) for empty user text."""
     caps = FakeCaps(routing_client=FakeRoutingClient(None))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, _error = await route_session_harness("")
     assert harness is None
     assert model is None
@@ -1760,7 +1763,7 @@ async def test_route_session_harness_sends_full_candidate_set_unfiltered() -> No
             return RoutingResult(model="databricks-gpt-5-4-nano", rationale="x", harness="codex")
 
     caps = FakeCaps(routing_client=_CapturingClient())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         await route_session_harness(
             "hello", session_id="conv_123", runner_client=_catalog_client()
         )
@@ -1781,7 +1784,7 @@ async def test_route_session_harness_keeps_responses_capable_model_on_pi() -> No
         model="databricks-gpt-5-4-nano", rationale="responses-capable", harness="pi"
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "do something", session_id="conv_123", runner_client=_catalog_client()
         )
@@ -1799,7 +1802,7 @@ async def test_route_session_harness_redirects_claude_on_pi_to_claude_sdk() -> N
     """
     expected = RoutingResult(model="databricks-claude-sonnet-4-6", rationale="mid", harness="pi")
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "quick q", session_id="conv_123", runner_client=_catalog_client()
         )
@@ -2073,7 +2076,7 @@ async def test_route_session_harness_keeps_raw_pick_in_verdict() -> None:
         raw_model="gpt-5-6-sol",
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, verdict, error = await route_session_harness(
             "do it",
             harness_candidates=("codex",),
@@ -2261,7 +2264,7 @@ def test_routing_settings_reads_the_caps_it_is_handed() -> None:
 def test_routing_settings_defaults_without_caps_or_settings() -> None:
     from omnigent.server.smart_routing import RoutingSettings, routing_settings
 
-    with patch("omnigent.runtime._globals._caps", new=None):
+    with patch.object(get_services(), "caps", new=None):
         assert routing_settings() == RoutingSettings()
     assert routing_settings(_SettingsCaps(routing_settings="not-settings")) == RoutingSettings()
 
@@ -2270,7 +2273,7 @@ def test_routing_settings_falls_back_to_the_process_globals() -> None:
     from omnigent.server.smart_routing import RoutingSettings, routing_settings
 
     settings = RoutingSettings(selection_model="gpt-5-4-mini")
-    with patch("omnigent.runtime._globals._caps", new=_SettingsCaps(routing_settings=settings)):
+    with patch.object(get_services(), "caps", new=_SettingsCaps(routing_settings=settings)):
         assert routing_settings() is settings
 
 
@@ -2320,7 +2323,7 @@ def test_route_option_source_takes_model_prefixes_from_the_settings() -> None:
     from omnigent.server.smart_routing import RoutePick, RoutingSettings, route_option_source
 
     caps = _SettingsCaps(routing_settings=RoutingSettings(model_prefixes=("databricks-",)))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         resolved = route_option_source().resolve_selection(
             RoutePick(model="gpt-5-6-sol"), ["codex"], _PREFIXED_CODEX_CATALOG
         )
@@ -2337,7 +2340,7 @@ def test_route_option_source_defaults_to_the_shared_catalog_prefixes() -> None:
     """
     from omnigent.server.smart_routing import RoutePick, RoutingSettings, route_option_source
 
-    with patch("omnigent.runtime._globals._caps", new=_SettingsCaps(RoutingSettings())):
+    with patch.object(get_services(), "caps", new=_SettingsCaps(RoutingSettings())):
         resolved = route_option_source().resolve_selection(
             RoutePick(model="gpt-5-6-sol"), ["codex"], _PREFIXED_CODEX_CATALOG
         )
@@ -2351,7 +2354,7 @@ def test_explicit_model_prefixes_win_over_the_settings() -> None:
 
     catalog = {"codex": ["system.ai.gpt-5-6-sol"]}
     caps = _SettingsCaps(routing_settings=RoutingSettings(model_prefixes=("databricks-",)))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         resolved = route_option_source(model_prefixes=["system.ai."]).resolve_selection(
             RoutePick(model="gpt-5-6-sol"), ["codex"], catalog
         )
@@ -2428,7 +2431,7 @@ def test_apply_servable_alias_reads_the_deployment_table() -> None:
     from omnigent.server.smart_routing import RoutingSettings, apply_servable_alias
 
     settings = RoutingSettings(servable_aliases={"gpt-5-6-sol": "acme.serving.sol"})
-    with patch("omnigent.runtime._globals._caps", new=_SettingsCaps(settings)):
+    with patch.object(get_services(), "caps", new=_SettingsCaps(settings)):
         assert apply_servable_alias("databricks-gpt-5-6-sol") == "acme.serving.sol"
         # A configured table replaces the default one wholesale.
         assert apply_servable_alias("databricks-glm-5-2") == "databricks-glm-5-2"
@@ -2439,7 +2442,7 @@ def test_infer_models_takes_the_current_generation_arms_from_the_settings() -> N
     from omnigent.server.smart_routing import RoutingSettings
 
     settings = RoutingSettings(current_generation_models={"gpt": ("databricks-acme-1",)})
-    with patch("omnigent.runtime._globals._caps", new=_SettingsCaps(settings)):
+    with patch.object(get_services(), "caps", new=_SettingsCaps(settings)):
         models = infer_models("codex")
     assert models is not None
     assert models[-1] == "databricks-acme-1"
@@ -2453,7 +2456,7 @@ def test_task_v1_claude_arms_follows_a_configured_menu() -> None:
     from omnigent.server.smart_routing import RoutingSettings, task_v1_claude_arms
 
     settings = RoutingSettings(menus={"cc": ("acme-opus", "acme-sonnet")})
-    with patch("omnigent.runtime._globals._caps", new=_SettingsCaps(settings)):
+    with patch.object(get_services(), "caps", new=_SettingsCaps(settings)):
         assert task_v1_claude_arms() == ("acme-opus", "acme-sonnet")
     assert task_v1_claude_arms() == ("claude-opus-4-8", "claude-sonnet-5")
 
@@ -2686,7 +2689,7 @@ async def test_route_session_harness_keeps_unknown_pi_compatibility() -> None:
     sonnet.pop("wire_apis")
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
 
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "quick q", session_id="conv_123", runner_client=client
         )
@@ -2705,7 +2708,7 @@ async def test_route_session_harness_falls_back_by_model_when_harness_absent() -
         harness=None,
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, _error = await route_session_harness(
             "what time is it?",
             session_id="conv_123",
@@ -2748,7 +2751,7 @@ async def test_route_session_harness_applies_the_clients_pick_verbatim(
         model=model, rationale="client-resolved", harness=harness, raw_model=raw_model
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         got_harness, got_model, verdict, error = await route_session_harness(
             "do the thing",
             harness_candidates=(harness,),
@@ -2770,7 +2773,7 @@ async def test_route_turn_substitutes_a_model_the_harness_gateway_bars() -> None
             raw_model="claude-haiku-4-5",
         )
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         model, verdict = await route_turn("pi", "quick lookup")
     # haiku 400s on pi's completions path; the claude fallback (sonnet-5) does not.
     assert model == "databricks-claude-sonnet-5"
@@ -2782,7 +2785,7 @@ async def test_route_turn_declines_when_nothing_the_harness_runs_fits() -> None:
     client = FakeRoutingClient(
         RoutingResult(model="databricks-gpt-5-5", rationale="capable", harness="pi")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         model, verdict = await route_turn(
             "pi", "hard task", catalog=["databricks-gpt-5-5", "databricks-gpt-5-5-pro"]
         )
@@ -2846,7 +2849,7 @@ async def test_route_turn_never_offers_pi_a_model_its_gateway_bars() -> None:
             offered.update(available_models)
             return None
 
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=_CapturingClient())):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=_CapturingClient())):
         await route_turn("pi", "hello")
     assert offered, "pi should still have candidates"
     for model in offered["pi"]:
@@ -2856,7 +2859,7 @@ async def test_route_turn_never_offers_pi_a_model_its_gateway_bars() -> None:
 @pytest.mark.asyncio
 async def test_route_turn_declines_when_every_candidate_is_barred() -> None:
     client = FakeRoutingClient(RoutingResult(model="databricks-gpt-5-5", rationale="x"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         model, verdict = await route_turn("pi", "hi", catalog=["databricks-gpt-5-6-luna"])
     assert (model, verdict) == (None, None)
 
@@ -2912,7 +2915,7 @@ async def test_route_session_harness_keeps_a_pi_child_on_pi(model: str) -> None:
     # fallback (sonnet-5) and stays on pi; gpt-5-5 is barred on pi and its gpt
     # fallback (luna) is barred too with no pi fallback, so it declines.
     client = FakeRoutingClient(RoutingResult(model=model, rationale="x", harness="pi"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         harness, routed, _verdict, error = await route_session_harness(
             "do it", allowed_family="pi"
         )
@@ -2932,7 +2935,7 @@ async def test_route_session_harness_declines_when_no_offered_harness_fits() -> 
     client = FakeRoutingClient(
         RoutingResult(model="databricks-gpt-5-5", rationale="x", harness="pi")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         harness, routed, verdict, error = await route_session_harness(
             "do it",
             allowed_family="pi",
@@ -2954,7 +2957,7 @@ async def test_route_turn_keeps_the_rationale_off_info(
     )
     with (
         caplog.at_level(logging.INFO, logger="omnigent.server.smart_routing"),
-        patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)),
+        patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)),
     ):
         model, _verdict = await route_turn("codex", "hello")
     assert model == "databricks-gpt-5-4"
@@ -2970,7 +2973,7 @@ async def test_route_session_harness_keeps_the_rationale_off_info(
     )
     with (
         caplog.at_level(logging.INFO, logger="omnigent.server.smart_routing"),
-        patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)),
+        patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)),
     ):
         harness, _model, _verdict, _error = await route_session_harness("hello")
     assert harness is not None
@@ -2996,7 +2999,7 @@ async def test_route_session_harness_declines_rather_than_offer_gateway_ids_off_
         RoutingResult(model="databricks-claude-opus-4-8", rationale="big", harness="claude-native")
     )
     caps = FakeCaps(routing_client=local, routing_backends=RoutingBackends(local=local))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, verdict, error = await route_session_harness(
             "refactor everything",
             harness_candidates=("claude-native", "codex-native"),
@@ -3014,7 +3017,7 @@ async def test_route_session_harness_declines_rather_than_offer_gateway_ids_off_
 async def test_route_turn_declines_rather_than_offer_gateway_ids_off_gateway() -> None:
     local = FakeRoutingClient(RoutingResult(model="databricks-claude-opus-4-8", rationale="big"))
     caps = FakeCaps(routing_client=local, routing_backends=RoutingBackends(local=local))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, verdict = await route_turn(
             "claude-native",
             "refactor everything",
@@ -3032,7 +3035,7 @@ async def test_route_session_harness_skips_the_static_top_up_off_gateway() -> No
         RoutingResult(model="claude-sonnet-4-6", rationale="mid", harness="claude-native")
     )
     caps = FakeCaps(routing_client=local, routing_backends=RoutingBackends(local=local))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, _verdict, error = await route_session_harness(
             "hello",
             harness_candidates=("claude-native", "codex-native"),
@@ -3052,7 +3055,7 @@ async def test_route_session_harness_skips_the_static_top_up_off_gateway() -> No
 async def test_route_turn_skips_the_static_table_off_gateway_but_takes_the_catalog() -> None:
     local = FakeRoutingClient(RoutingResult(model="claude-sonnet-4-6", rationale="mid"))
     caps = FakeCaps(routing_client=local, routing_backends=RoutingBackends(local=local))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, verdict = await route_turn(
             "claude-native",
             "hello",
@@ -3076,7 +3079,7 @@ async def test_route_turn_picks_the_router_gateway_backing_allows(
     external = FakeRoutingClient(RoutingResult(model="databricks-gpt-5-4", rationale="external"))
     local = FakeRoutingClient(RoutingResult(model="databricks-gpt-5-5", rationale="local"))
     caps = FakeCaps(routing_client=external, routing_backends=_both_backends(external, local))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, verdict = await route_turn("codex", "hello", gateway_backed=gateway_backed)
     assert verdict is not None
     assert verdict["router_source"] == expected_source
@@ -3101,7 +3104,7 @@ async def test_route_session_harness_picks_the_router_gateway_backing_allows(
         RoutingResult(model="databricks-gpt-5-5", rationale="local", harness="codex")
     )
     caps = FakeCaps(routing_client=external, routing_backends=_both_backends(external, local))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         _harness, model, verdict, error = await route_session_harness(
             "hello", gateway_backed=gateway_backed
         )
@@ -3114,7 +3117,7 @@ async def test_route_session_harness_picks_the_router_gateway_backing_allows(
 @pytest.mark.asyncio
 async def test_routing_is_unavailable_when_neither_backend_is_configured() -> None:
     caps = FakeCaps(routing_client=None, routing_backends=RoutingBackends())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         assert await route_turn("codex", "hello") == (None, None)
         harness, model, verdict, error = await route_session_harness("hello")
     assert (harness, model, verdict) == (None, None, None)
@@ -3126,7 +3129,7 @@ async def test_external_only_deployment_cannot_route_off_the_gateway() -> None:
     """No built-in judge means an off-gateway harness has no source at all."""
     external = FakeRoutingClient(RoutingResult(model="databricks-gpt-5-4", rationale="x"))
     caps = FakeCaps(routing_client=external, routing_backends=RoutingBackends(external=external))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         assert await route_turn("codex", "hello", gateway_backed=False) == (None, None)
     assert external.offered == []
 
@@ -3135,7 +3138,7 @@ async def test_external_only_deployment_cannot_route_off_the_gateway() -> None:
 async def test_a_legacy_single_routing_client_is_classified_as_the_oss_judge() -> None:
     """``routing_backends`` unset derives the pair from ``routing_client``."""
     client = FakeRoutingClient(RoutingResult(model="databricks-gpt-5-4", rationale="x"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=client)):
         _model, verdict = await route_turn("codex", "hello", gateway_backed=True)
     assert verdict is not None
     assert verdict["router_source"] == "oss-llm"
@@ -3147,7 +3150,7 @@ async def test_llm_routing_client_serves_a_cross_harness_verdict_without_a_raw_m
     llm = _FakeLLMClient({"model": "databricks-gpt-5-5", "harness": "codex-native"})
     client = LLMRoutingClient(llm)
     caps = FakeCaps(routing_client=client, routing_backends=RoutingBackends(local=client))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         harness, model, verdict, error = await route_session_harness(
             "hello",
             harness_candidates=("claude-native", "codex-native"),
@@ -3418,7 +3421,7 @@ async def test_a_cold_cache_still_fetches_and_routes() -> None:
         ["databricks-claude-haiku-4-5", "databricks-claude-opus-4-8"]
     )
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, _verdict = await route_turn(
             "claude-sdk",
             "complex task",
@@ -3447,7 +3450,7 @@ async def test_a_warm_cache_routes_a_turn_without_touching_the_runner() -> None:
     client.get.reset_mock()
 
     caps = FakeCaps(routing_client=FakeRoutingClient(expected))
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         model, _verdict = await route_turn(
             "claude-sdk",
             "complex task",

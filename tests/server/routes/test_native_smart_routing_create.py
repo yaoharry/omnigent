@@ -30,6 +30,7 @@ import sqlalchemy as sa
 from omnigent.db.db_models import SqlConversation
 from omnigent.db.utils import generate_agent_id
 from omnigent.runner.subagent_routing import AUTO_HARNESS_LABEL_KEY, ROUTING_DECISION_LABEL_KEY
+from omnigent.runtime import get_services
 from omnigent.server.host_registry import HostRegistry
 from omnigent.server.routes._sessions.common import (
     get_server_host_registry,
@@ -57,15 +58,15 @@ _GATEWAY_HOST_ID = "aa11bb22cc33dd44ee55ff6677889900"
 
 # Names ``init_runtime`` (via the shared ``runtime_init`` fixture) rebinds and
 # never restores.
-_RUNTIME_GLOBALS = (
-    "_conversation_store",
-    "_agent_store",
-    "_agent_cache",
-    "_file_store",
-    "_artifact_store",
-    "_comment_store",
-    "_policy_store",
-    "_terminal_registry",
+_RUNTIME_SERVICES = (
+    "conversation_store",
+    "agent_store",
+    "agent_cache",
+    "file_store",
+    "artifact_store",
+    "comment_store",
+    "policy_store",
+    "terminal_registry",
 )
 
 
@@ -80,12 +81,10 @@ def _restore_runtime_globals() -> Iterator[None]:
 
     :yields: None.
     """
-    from omnigent.runtime import _globals
-
-    saved = {name: getattr(_globals, name) for name in _RUNTIME_GLOBALS}
+    saved = {name: getattr(get_services(), name) for name in _RUNTIME_SERVICES}
     yield
     for name, value in saved.items():
-        setattr(_globals, name, value)
+        setattr(get_services(), name, value)
 
 
 CLAUDE_MODEL = "databricks-claude-opus-4-8"
@@ -166,7 +165,7 @@ async def _create_smart_routing_session(
         "cost_control_mode_override": "on",
         "smart_routing_message": ROUTING_MESSAGE,
     }
-    with patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=oss)):
+    with patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=oss)):
         return await client.post("/v1/sessions", json=body)
 
 
@@ -197,7 +196,7 @@ async def _create_fixed_harness_session(
         "smart_routing_message": ROUTING_MESSAGE,
         **extra,
     }
-    with patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=oss)):
+    with patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=oss)):
         return await client.post("/v1/sessions", json=body)
 
 
@@ -476,7 +475,7 @@ async def test_smart_routing_session_keeps_cross_harness_subagents(
     spawn_router = FakeRoutingClient(
         RoutingResult(model=GPT_MODEL, rationale="narrow change", harness="codex")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=spawn_router)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=spawn_router)):
         resp = await client.post(
             f"/v1/sessions/{session_id}/hooks/route-subagent",
             json=SPAWN_PAYLOAD,
@@ -512,7 +511,7 @@ async def _route_turn(
     :param prompt: The submitted prompt text.
     :returns: The raw hook response.
     """
-    with patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=False)):
+    with patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=False)):
         return await client.post(
             f"/v1/sessions/{session_id}/hooks/route-turn",
             json={"harness": harness, "prompt": prompt},
@@ -612,7 +611,7 @@ async def test_bundle_agent_auto_path_is_unchanged(
 ) -> None:
     agent = await create_test_agent(client, name="smart-routing-bundle-agent")
     routing_client = FakeRoutingClient(RoutingResult(model=CLAUDE_MODEL, rationale="sized task"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         created = await client.post(
             "/v1/sessions",
             json={
@@ -659,7 +658,7 @@ async def _create_opt_in_session(
     :returns: The create response.
     """
     routing_client = FakeRoutingClient(RoutingResult(model=CLAUDE_MODEL, rationale="sized task"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         return await client.post(
             "/v1/sessions",
             json={
@@ -933,7 +932,7 @@ async def test_create_stamps_subagent_routing_for_routed_sessions(
         payload["parent_session_id"] = parent.json()["id"]
 
     routing_client = FakeRoutingClient(RoutingResult(model=CLAUDE_MODEL, rationale="sized task"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         created = await client.post("/v1/sessions", json=payload)
     assert created.status_code == 201, created.text
 
@@ -975,7 +974,7 @@ async def test_native_candidates_impose_no_family_constraint() -> None:
     # auto session passes no allowed_family, so both native families reach the
     # router even though the family filter is applied to the same tuple.
     routing_client = FakeRoutingClient(RoutingResult(model=GPT_MODEL, rationale="narrow change"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         harness, model, _verdict, error = await route_session_harness(
             ROUTING_MESSAGE,
             harness_candidates=AUTO_NATIVE_ROUTING_HARNESSES,
@@ -992,7 +991,7 @@ async def test_native_candidates_still_honor_an_explicit_family() -> None:
     routing_client = FakeRoutingClient(
         RoutingResult(model=CLAUDE_MODEL, rationale="deep reasoning")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         harness, _model, _verdict, error = await route_session_harness(
             ROUTING_MESSAGE,
             harness_candidates=AUTO_NATIVE_ROUTING_HARNESSES,
@@ -1005,7 +1004,7 @@ async def test_native_candidates_still_honor_an_explicit_family() -> None:
 
 async def test_no_installed_native_candidates_reports_the_standard_error() -> None:
     routing_client = FakeRoutingClient(RoutingResult(model=GPT_MODEL, rationale="narrow change"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         harness, model, verdict, error = await route_session_harness(
             ROUTING_MESSAGE,
             harness_candidates=(),
@@ -1155,7 +1154,7 @@ async def test_auto_routing_is_refused_when_no_router_can_serve_an_off_gateway_a
 
     body = SimpleNamespace(host_id="host_1", smart_routing_message=ROUTING_MESSAGE)
     routing_client = FakeRoutingClient(RoutingResult(model=CLAUDE_MODEL, rationale="sized task"))
-    with patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=False)):
+    with patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=False)):
         agent_name, model, verdict, error = await _resolve_native_smart_routing(
             cast("Any", body),
             cast("Any", _routing_request(_host_reporting(gateway))),
@@ -1196,7 +1195,7 @@ async def test_auto_routing_falls_back_to_the_built_in_judge_off_the_gateway(
         RoutingResult(model="gpt-5-5", rationale="narrow change", harness="codex-native")
     )
     with (
-        patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=True)),
+        patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=True)),
         patch.object(
             orchestration,
             "_pre_session_model_catalog",
@@ -1227,7 +1226,7 @@ async def test_auto_routing_declines_off_the_gateway_when_the_host_answers_nothi
 
     body = SimpleNamespace(host_id="host_1", smart_routing_message=ROUTING_MESSAGE)
     routing_client = FakeRoutingClient(RoutingResult(model=CLAUDE_MODEL, rationale="sized task"))
-    with patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=True)):
+    with patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=True)):
         agent_name, model, verdict, error = await orchestration._resolve_native_smart_routing(
             cast("Any", body),
             cast("Any", _routing_request(_host_reporting({"codex-native": False}))),
@@ -1248,7 +1247,7 @@ async def test_auto_routing_still_runs_when_the_host_reports_no_gateway_map() ->
     routing_client = FakeRoutingClient(RoutingResult(model=GPT_MODEL, rationale="narrow change"))
     # An external router is what puts both panes on the menu; unknown gateway
     # backing must not take it away.
-    with patch("omnigent.runtime._globals._caps", new=_caps_with(routing_client, oss=False)):
+    with patch.object(get_services(), "caps", new=_caps_with(routing_client, oss=False)):
         agent_name, model, _verdict, error = await _resolve_native_smart_routing(
             cast("Any", body),
             cast("Any", _routing_request(_host_reporting(None))),
@@ -1271,7 +1270,7 @@ async def test_a_judge_only_deployment_keeps_the_default_pane_and_routes_its_mod
 
     body = SimpleNamespace(host_id="host_1", smart_routing_message=ROUTING_MESSAGE)
     judge = FakeRoutingClient(RoutingResult(model=CLAUDE_MODEL, rationale="sized task"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=judge)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=judge)):
         agent_name, model, verdict, error = await _resolve_native_smart_routing(
             cast("Any", body),
             cast("Any", _routing_request(_host_reporting(None))),
@@ -1294,7 +1293,7 @@ async def test_a_judge_only_create_pins_nothing_when_the_pick_is_out_of_family()
 
     body = SimpleNamespace(host_id="host_1", smart_routing_message=ROUTING_MESSAGE)
     judge = FakeRoutingClient(RoutingResult(model=GPT_MODEL, rationale="narrow change"))
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=judge)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=judge)):
         agent_name, model, verdict, error = await _resolve_native_smart_routing(
             cast("Any", body),
             cast("Any", _routing_request(_host_reporting(None))),
@@ -1438,7 +1437,7 @@ async def test_a_pane_create_routes_with_the_judge_when_the_router_is_not_enable
         "smart_routing_message": ROUTING_MESSAGE,
     }
     with (
-        patch("omnigent.runtime._globals._caps", new=caps),
+        patch.object(get_services(), "caps", new=caps),
         patch.object(orchestration, "_routing_host_for_create", return_value=_host_reporting({})),
         patch.object(
             orchestration,
@@ -1600,7 +1599,7 @@ async def test_pre_session_catalog_is_offered_instead_of_the_static_table(
     routing_client = FakeRoutingClient(
         RoutingResult(model=verdict_model, rationale="deep reasoning")
     )
-    with patch("omnigent.runtime._globals._caps", new=FakeCaps(routing_client=routing_client)):
+    with patch.object(get_services(), "caps", new=FakeCaps(routing_client=routing_client)):
         harness, model, verdict, error = await route_session_harness(
             ROUTING_MESSAGE,
             harness_candidates=harness_candidates,

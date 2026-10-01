@@ -913,6 +913,26 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
         "pi": "HARNESS_PI_MODEL",
         "qwen": "HARNESS_QWEN_MODEL",
     },
+    # Per-spec environment builders share the common ``(spec, *, cwd,
+    # workdir)`` callable shape.  Native terminal environments remain on the
+    # NativeHarnessProvider seam; ACP CLI rows keep their session-aware
+    # dispatch in the runner.
+    spawn_env_builders={
+        "acp": "omnigent.harnesses.config.spawn_env:_build_acp_spawn_env",
+        "antigravity": ("omnigent.harnesses.config.spawn_env:_build_antigravity_spawn_env"),
+        "claude-sdk": "omnigent.harnesses.config.spawn_env:_build_claude_sdk_spawn_env",
+        "codex": "omnigent.harnesses.config.spawn_env:_build_codex_spawn_env",
+        "copilot": "omnigent.harnesses.config.spawn_env:_build_copilot_spawn_env",
+        "cursor": "omnigent.harnesses.config.spawn_env:_build_cursor_spawn_env",
+        "goose": "omnigent.harnesses.config.spawn_env:_build_goose_spawn_env",
+        "hermes": "omnigent.harnesses.config.spawn_env:_build_hermes_spawn_env",
+        "kimi": "omnigent.harnesses.config.spawn_env:_build_kimi_spawn_env",
+        "openai-agents": (
+            "omnigent.harnesses.config.spawn_env:_build_openai_agents_sdk_spawn_env"
+        ),
+        "pi": "omnigent.harnesses.config.spawn_env:_build_pi_spawn_env",
+        "qwen": "omnigent.harnesses.config.spawn_env:_build_qwen_spawn_env",
+    },
     background_title_generators={
         "claude-sdk": BackgroundTitleGeneratorSpec(
             "omnigent.runner.background_titles.sdk:generate_background_title"

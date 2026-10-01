@@ -110,7 +110,6 @@ from omnigent.runtime.policies.builder import (
     load_session_usage,
 )
 from omnigent.runtime.policies.engine import PolicyEngine
-from omnigent.runtime.workflow import _find_spec_by_name
 from omnigent.server import session_live_state, shutdown_state
 from omnigent.server._elicitation_registry import (
     _harness_elicitation_owners,
@@ -359,6 +358,7 @@ from omnigent.server.subagent_activity import (
     record_claude_subagent_return,
     record_subagent_activity,
 )
+from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 from omnigent.spec.types import (
     AgentSpec,
     Phase,
@@ -8946,7 +8946,9 @@ def _oss_routing_available(caps: Any = None) -> bool:  # type: ignore[explicit-a
 
     if caps is None:
         try:
-            from omnigent.runtime._globals import _caps
+            from omnigent.runtime import get_services
+
+            _caps = get_services().caps
         except ImportError:
             return False
         caps = _caps
@@ -8967,7 +8969,9 @@ def _external_router_usable(caps: Any = None) -> bool:  # type: ignore[explicit-
 
     if caps is None:
         try:
-            from omnigent.runtime._globals import _caps
+            from omnigent.runtime import get_services
+
+            _caps = get_services().caps
         except ImportError:
             return False
         caps = _caps
@@ -9884,7 +9888,7 @@ async def _create_session_from_existing_agent(
     selection_spec = None
     if agent_cache is not None:
         from omnigent.harness_aliases import canonicalize_harness
-        from omnigent.runtime.workflow import _find_spec_by_name
+        from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
         try:
             selection_spec = (
@@ -11252,7 +11256,7 @@ def _validate_session_model_selection(
     :raises OmnigentError: If the harness cannot be resolved or its model policy rejects the pick.
     """
     from omnigent.harness_aliases import canonicalize_harness
-    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
     harness = canonicalize_harness(conv.harness_override)
     if harness and harness != "acp":
@@ -11318,7 +11322,9 @@ async def _load_acp_model_options(
     if cached is not None:
         return cached
     if agent_store is None:
-        from omnigent.runtime._globals import _agent_store
+        from omnigent.runtime import get_services
+
+        _agent_store = get_services().agent_store
 
         agent_store = _agent_store
     if agent_store is None:
@@ -11327,7 +11333,7 @@ async def _load_acp_model_options(
     if spec is None:
         return []
     from omnigent.models.model_catalog import _acp_launch_model, acp_curated_models
-    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
     def resolve_options() -> list[dict[str, Any]]:
         resolved_spec = spec

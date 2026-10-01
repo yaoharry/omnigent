@@ -27,6 +27,7 @@ import httpx
 import pytest
 
 from omnigent.entities.conversation import MessageData, NewConversationItem
+from omnigent.runtime import get_services
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
 from tests.server.helpers import (
     create_test_session,
@@ -238,7 +239,7 @@ async def test_delete_session_when_runner_offline(client: httpx.AsyncClient) -> 
     chat actually disappears from the UI.
     """
     from omnigent.errors import ErrorCode, OmnigentError
-    from omnigent.runtime import _globals, set_runner_router
+    from omnigent.runtime import set_runner_router
 
     snapshot = await create_test_session(client)
     conv_id = snapshot["id"]
@@ -251,7 +252,7 @@ async def test_delete_session_when_runner_offline(client: httpx.AsyncClient) -> 
                 code=ErrorCode.RUNNER_UNAVAILABLE,
             )
 
-    prior = _globals._runner_router
+    prior = get_services().runner_router
     set_runner_router(_OfflineRunnerRouter())  # type: ignore[arg-type]
     try:
         del_resp = await client.delete(f"/v1/sessions/{conv_id}")

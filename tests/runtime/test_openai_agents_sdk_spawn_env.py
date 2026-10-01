@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 import yaml as _yaml
 
-from omnigent.runtime.workflow import _build_openai_agents_sdk_spawn_env, _load_global_auth
+from omnigent.harnesses.config.providers import _load_global_auth
+from omnigent.harnesses.config.spawn_env import _build_openai_agents_sdk_spawn_env
 from omnigent.spec.types import (
     AgentSpec,
     ApiKeyAuth,
@@ -113,7 +114,7 @@ def test_use_responses_config_value_is_interpreted_as_boolean(
 ) -> None:
     """Stringified YAML booleans must not be evaluated by Python truthiness."""
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_provider_for_build",
+        "omnigent.harnesses.config.providers._resolve_provider_for_build",
         lambda *args, **kwargs: None,
     )
     env = _build_openai_agents_sdk_spawn_env(
@@ -224,7 +225,7 @@ def test_reasoning_item_id_policy_threads_into_env_var(
     policy: str,
 ) -> None:
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_provider_for_build",
+        "omnigent.harnesses.config.providers._resolve_provider_for_build",
         lambda *args, **kwargs: None,
     )
     env = _build_openai_agents_sdk_spawn_env(
@@ -274,11 +275,11 @@ def test_profile_injects_ucode_state(
         },
     )
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.get_workspace_url_for_profile",
+        "omnigent.harnesses.config.providers.get_workspace_url_for_profile",
         lambda profile: "https://example.databricks.com",
     )
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.read_ucode_state",
+        "omnigent.harnesses.config.providers.read_ucode_state",
         lambda workspace_url: state,
     )
 

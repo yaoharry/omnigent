@@ -1,6 +1,6 @@
 """Generic ACP-agent registry for ``omnigent setup`` and the runtime.
 
-The generic ``acp`` harness (see :func:`omnigent.runtime.workflow._build_acp_spawn_env`
+The generic ``acp`` harness (see :func:`omnigent.harnesses.config.spawn_env._build_acp_spawn_env`
 and :mod:`omnigent.inner.acp_harness`) drives *any* agent that speaks the Agent
 Client Protocol. Which agents are available is pure user config: a list of named
 commands in a dedicated top-level ``acp:`` block of ``~/.omnigent/config.yaml``::

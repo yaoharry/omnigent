@@ -48,7 +48,7 @@ Env vars read at startup:
   profile from ``~/.databrickscfg`` to use, e.g. ``"<your-profile>"``.
   Single canonical spelling — same as the AP-side spawn-env
   builder
-  :func:`omnigent.runtime.workflow._build_openai_agents_sdk_spawn_env`
+  :func:`omnigent.harnesses.config.spawn_env._build_openai_agents_sdk_spawn_env`
   and the parametrized test fixture
   :data:`tests.e2e._harness_probes.HarnessProbe.env_prefix`.
   Unlike the claude-sdk / codex / pi wraps there's no

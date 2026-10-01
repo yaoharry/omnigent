@@ -16,6 +16,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from omnigent.runtime import get_services
 from omnigent.server.feature_flags import Feature, FeatureFlags
 
 pytestmark = pytest.mark.asyncio
@@ -188,7 +189,7 @@ async def test_info_smart_routing_enabled_tracks_the_servers_routing_capability(
     expected: bool,
 ) -> None:
     """Either routing capability turns the flag on; neither leaves it off."""
-    monkeypatch.setattr("omnigent.runtime._globals._caps", caps, raising=False)
+    monkeypatch.setattr(get_services(), "caps", caps, raising=False)
 
     resp = await client.get("/v1/info")
     assert resp.status_code == 200
@@ -259,7 +260,7 @@ async def test_info_reports_which_routers_can_answer(
     caps: object,
     expected: dict[str, bool],
 ) -> None:
-    monkeypatch.setattr("omnigent.runtime._globals._caps", caps, raising=False)
+    monkeypatch.setattr(get_services(), "caps", caps, raising=False)
 
     resp = await client.get("/v1/info")
     assert resp.status_code == 200
@@ -279,7 +280,8 @@ async def test_info_reports_routing_on_for_a_backends_only_deployment(
     from omnigent.server.routing_backend import RoutingBackends
 
     monkeypatch.setattr(
-        "omnigent.runtime._globals._caps",
+        get_services(),
+        "caps",
         SimpleNamespace(
             routing_backends=RoutingBackends(external=_external_client()),
             routing_client=None,
@@ -300,7 +302,8 @@ async def test_info_classifies_a_legacy_single_routing_client_as_the_oss_judge(
 ) -> None:
     """No ``routing_backends`` derives the pair from ``routing_client`` by type."""
     monkeypatch.setattr(
-        "omnigent.runtime._globals._caps",
+        get_services(),
+        "caps",
         SimpleNamespace(
             routing_client=object(),
             routing_backends=None,

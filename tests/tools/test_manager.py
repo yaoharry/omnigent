@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from omnigent.errors import OmnigentError
+from omnigent.runtime import get_services
 from omnigent.spec.types import (
     AgentSpec,
     BuiltinToolConfig,
@@ -552,7 +553,7 @@ def _spawn_spec() -> AgentSpec:
 def test_advise_models_hidden_when_routing_disabled() -> None:
     """sys_advise_models must not appear when no router is configured."""
     caps = _FakeRoutingCaps(routing_client=None)
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         names = {s["function"]["name"] for s in ToolManager(_spawn_spec()).get_tool_schemas()}
     assert "sys_list_models" in names
     assert "sys_advise_models" not in names
@@ -570,7 +571,7 @@ def test_advise_models_exposed_from_a_backends_only_deployment() -> None:
         routing_client=None,
         routing_backends=RoutingBackends(local=cast("Any", object())),
     )
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         names = {s["function"]["name"] for s in ToolManager(_spawn_spec()).get_tool_schemas()}
     assert "sys_advise_models" in names
 
@@ -578,7 +579,7 @@ def test_advise_models_exposed_from_a_backends_only_deployment() -> None:
 def test_advise_models_exposed_when_routing_enabled() -> None:
     """sys_advise_models is advertised alongside send when routing is configured."""
     caps = _FakeRoutingCaps(routing_client=object())
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         names = {s["function"]["name"] for s in ToolManager(_spawn_spec()).get_tool_schemas()}
     assert "sys_list_models" in names
     assert "sys_advise_models" in names

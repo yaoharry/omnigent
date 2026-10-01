@@ -111,7 +111,7 @@ async def test_compact_skips_omnigent_compaction_when_runner_handles_it(
         )
 
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.compact_conversation_now",
+        "omnigent.runtime.compaction_service.compact_conversation_now",
         _must_not_run,
     )
 
@@ -156,7 +156,7 @@ async def test_compact_returns_error_when_runner_noops(
         raise AssertionError("compact_conversation_now must not run when the runner returned 204")
 
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.compact_conversation_now",
+        "omnigent.runtime.compaction_service.compact_conversation_now",
         _must_not_run,
     )
 
@@ -227,7 +227,7 @@ async def test_compact_errors_when_runner_injection_fails(
         )
 
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.compact_conversation_now",
+        "omnigent.runtime.compaction_service.compact_conversation_now",
         _must_not_run,
     )
 
@@ -271,7 +271,7 @@ async def test_compact_native_session_no_runner_returns_reconnect_error(
         )
 
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.compact_conversation_now",
+        "omnigent.runtime.compaction_service.compact_conversation_now",
         _must_not_run,
     )
 

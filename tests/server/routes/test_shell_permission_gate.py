@@ -45,7 +45,7 @@ from fastapi.responses import JSONResponse
 
 from omnigent.entities import Conversation, ResolvedAccess, SessionPermission
 from omnigent.errors import OmnigentError
-from omnigent.runtime import _globals, set_runner_client, set_runner_router
+from omnigent.runtime import get_services, set_runner_client, set_runner_router
 from omnigent.server.auth import (
     LEVEL_EDIT,
     LEVEL_OWNER,
@@ -250,8 +250,8 @@ class _FakeRunnerRouter:
 
 @pytest.fixture
 def runner_globals_reset() -> Iterator[None]:
-    prior_client = _globals._runner_client
-    prior_router = _globals._runner_router
+    prior_client = get_services().runner_client
+    prior_router = get_services().runner_router
     set_runner_client(None)
     set_runner_router(None)
     yield

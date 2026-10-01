@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from omnigent.runtime import _globals
+from omnigent.runtime import get_services
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
 from omnigent.server.routes import sessions as sessions_routes
@@ -33,7 +33,7 @@ def app(
     """Enable session policy storage for the shared server client fixture."""
     artifact_store = LocalArtifactStore(str(tmp_path / "artifacts"))
     policy_store = SqlAlchemyPolicyStore(db_uri)
-    monkeypatch.setattr(_globals, "_policy_store", policy_store)
+    monkeypatch.setattr(get_services(), "policy_store", policy_store)
     return create_app(
         agent_store=SqlAlchemyAgentStore(db_uri),
         file_store=SqlAlchemyFileStore(db_uri),

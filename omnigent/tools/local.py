@@ -150,17 +150,8 @@ class LocalPythonTool(Tool):
         """
         return self._metadata.name
 
-    # ``is_async`` and ``dispatch_async`` deliberately not
-    # overridden. Every ``@tool``-decorated function is sync
-    # from the framework's perspective post-step-11; async
-    # dispatch is the LLM's per-call choice via
-    # ``sys_call_async`` (which calls
-    # ``omnigent.runtime.workflow._dispatch_local_python_tool_async``
-    # directly, not through ``LocalPythonTool.dispatch_async``).
-    # The ``Tool`` base class default ``is_async`` returns
-    # ``False`` and ``dispatch_async`` raises
-    # ``NotImplementedError``, which is exactly the right
-    # contract for this class.
+    # Local tools use the base synchronous contract. The runner handles
+    # background execution when a caller selects sys_call_async.
 
     def module_path(self) -> str:
         """

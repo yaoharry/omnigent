@@ -3644,7 +3644,7 @@ def resolve_native_codex_launch(
     """Resolve the native Codex launch config across all offerings.
 
     Mirrors the in-process codex harness routing precedence
-    (:func:`omnigent.runtime.workflow._resolve_provider_for_build`) for the
+    (:func:`omnigent.harnesses.config.providers._resolve_provider_for_build`) for the
     ``openai`` surface, so ``omnigent codex`` and a host-spawned native
     Codex session route through ``omnigent setup``:
 
@@ -3652,7 +3652,7 @@ def resolve_native_codex_launch(
        provider (:class:`~omnigent.spec.types.ProviderAuth`, fails loud when
        undeclared), a spec :class:`~omnigent.spec.types.DatabricksAuth`, or a
        legacy ``executor.profile`` / ``executor.config.profile`` — resolved
-       through :func:`~omnigent.runtime.workflow._resolve_provider_for_build`
+       through :func:`~omnigent.harnesses.config.providers._resolve_provider_for_build`
        itself, the same resolver the in-process harness uses, so a spec that
        routes in-process routes natively too. A spec ``ApiKeyAuth`` routes
        through a synthesized key provider with its declared endpoint;
@@ -3683,6 +3683,11 @@ def resolve_native_codex_launch(
         config (issue #2744 — parity with the in-process codex harness).
     :returns: The resolved :class:`NativeCodexLaunch`.
     """
+    from omnigent.harnesses.config.providers import (
+        _load_global_auth,
+        _resolve_provider_for_build,
+        _synthesize_codex_api_key_provider,
+    )
     from omnigent.inference_config import (
         load_runtime_inference_config,
         resolve_bound_model,
@@ -3697,11 +3702,6 @@ def resolve_native_codex_launch(
         SUBSCRIPTION_KIND,
         default_provider_for_harness,
         load_config,
-    )
-    from omnigent.runtime.workflow import (
-        _load_global_auth,
-        _resolve_provider_for_build,
-        _synthesize_codex_api_key_provider,
     )
     from omnigent.spec.types import DatabricksAuth
 

@@ -1583,7 +1583,9 @@ def routing_settings(caps: Any = None) -> RoutingSettings:  # type: ignore[expli
     """
     if caps is None:
         try:
-            from omnigent.runtime._globals import _caps
+            from omnigent.runtime import get_services
+
+            _caps = get_services().caps
         except ImportError:
             return RoutingSettings()
         caps = _caps
@@ -2072,7 +2074,9 @@ async def route_session_harness(
     if not user_message:
         return None, None, None, None
     try:
-        from omnigent.runtime._globals import _caps
+        from omnigent.runtime import get_services
+
+        _caps = get_services().caps
     except ImportError:
         return None, None, None, "Smart routing is not available."
 
@@ -2289,7 +2293,9 @@ async def route_turn(
         onto a model the pane cannot switch to. ``False`` declines instead.
     """
     try:
-        from omnigent.runtime._globals import _caps
+        from omnigent.runtime import get_services
+
+        _caps = get_services().caps
     except ImportError:
         return None, None
 

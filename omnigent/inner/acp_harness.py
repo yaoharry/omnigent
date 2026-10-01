@@ -8,7 +8,7 @@ Wraps an :class:`omnigent.inner.acp_executor.AcpExecutor`, which drives *any*
 ACP agent command over the Agent Client Protocol — the vendor-agnostic
 counterpart to the ``goose`` / ``qwen`` wraps. Which agent runs is decided by
 the spawn-env the runner passes (see
-:func:`omnigent.runtime.workflow._build_acp_spawn_env`), which resolves the
+:func:`omnigent.harnesses.config.spawn_env._build_acp_spawn_env`), which resolves the
 picked ``acp:<slug>`` to a user-configured command in the ``acp:`` config block.
 
 Auth is each agent's own (the user logs into their agent via its own CLI);

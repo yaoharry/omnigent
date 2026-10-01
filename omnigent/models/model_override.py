@@ -25,23 +25,8 @@ MODEL_OVERRIDE_MAX_LEN = 256
 # and bracket suffixes ("claude-opus-4-8[1m]").
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*$")
 
-# SDK harnesses whose model override lands in the spawn env — must stay
-# in sync with ``_HARNESS_MODEL_ENV_KEY`` in ``omnigent/runner/app.py``.
-_SDK_MODEL_OVERRIDE_HARNESSES: frozenset[str] = frozenset(
-    {
-        "claude-sdk",
-        "codex",
-        "pi",
-        "openai-agents",
-        "cursor",
-        "antigravity",
-        "kimi",
-        "qwen",
-        "goose",
-        "copilot",
-    }
-)
-_SDK_MODEL_OVERRIDE_HARNESSES = frozenset(model_env_keys())
+# The registry supplies the same model keys used by runner launch composition.
+_SDK_MODEL_OVERRIDE_HARNESSES: frozenset[str] = frozenset(model_env_keys())
 
 
 def validate_model_override(value: str) -> str:
@@ -86,7 +71,7 @@ _CLAUDE_FAMILY_HARNESSES: frozenset[str] = frozenset(
 # multi-model like pi and accepts any validated id (no family rejection).
 # antigravity is Gemini-native: it authenticates a direct Gemini API key /
 # Vertex AI and has no Databricks/gateway path (see _build_antigravity_spawn_env
-# in omnigent/runtime/workflow.py). So unlike the single-vendor harnesses above,
+# in omnigent/harnesses/config/spawn_env.py). So unlike the single-vendor harnesses above,
 # the rule here is framed as a *reject-list* of the families it definitively
 # cannot serve (Claude / GPT, and any ``databricks-``-prefixed gateway id),
 # rather than a strict Gemini allow-list — bare/ambiguous ids (e.g. a future

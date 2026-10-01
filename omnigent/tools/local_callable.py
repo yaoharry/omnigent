@@ -96,10 +96,8 @@ class LocalCallableTool(Tool):
         """
         Return the dotted import path the YAML registered.
 
-        Used by :func:`omnigent.runtime.workflow._dispatch_local_callable_tool_async`
-        to thread the path into a background workflow without
-        reaching into ``self._info`` (which would couple the runtime
-        to :class:`LocalToolInfo`'s internal shape).
+        Background dispatch passes this path to the runner without
+        depending on :class:`LocalToolInfo`'s internal shape.
 
         :returns: Dotted import path, e.g.
             ``"examples._shared.tool_functions.calculate"``.

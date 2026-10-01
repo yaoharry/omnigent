@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml as _yaml
 
-from omnigent.runtime.workflow import _build_claude_sdk_spawn_env
+from omnigent.harnesses.config.spawn_env import _build_claude_sdk_spawn_env
 from omnigent.spec.types import (
     AgentSpec,
     ApiKeyAuth,
@@ -39,7 +39,7 @@ def _isolate_global_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     """
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_catalog_default_model",
+        "omnigent.harnesses.config.providers._resolve_catalog_default_model",
         lambda provider_name, family, *, context: f"catalog-{provider_name}-{family}-default",
     )
 
@@ -225,11 +225,11 @@ def _ucode_state_without_model(monkeypatch: pytest.MonkeyPatch, *, model: str | 
         },
     )
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.get_workspace_url_for_profile",
+        "omnigent.harnesses.config.providers.get_workspace_url_for_profile",
         lambda profile: "https://example.databricks.com",
     )
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.read_ucode_state",
+        "omnigent.harnesses.config.providers.read_ucode_state",
         lambda workspace_url: state,
     )
 

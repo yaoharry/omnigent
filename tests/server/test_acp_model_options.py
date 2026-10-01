@@ -12,6 +12,7 @@ import yaml
 from omnigent.entities.conversation import Conversation
 from omnigent.errors import OmnigentError
 from omnigent.runner.app import _build_spawn_env_from_spec
+from omnigent.runtime import get_services
 from omnigent.server.routes._sessions import orchestration as orch
 from omnigent.spec.types import AgentSpec, ExecutorSpec, ProviderAuth
 
@@ -89,7 +90,7 @@ async def test_load_acp_model_options_returns_empty_without_agent_store(
     # Another test in the same shard may have left a runtime-installed store
     # behind; pin the global to None so this branch is exercised, not the
     # ambient DB-backed store (whose agents id column rejects "agent_1").
-    monkeypatch.setattr("omnigent.runtime._globals._agent_store", None)
+    monkeypatch.setattr(get_services(), "agent_store", None)
     conv = _conv()
     result = await orch._load_acp_model_options("conv_acp", conv, None)
     assert result == []

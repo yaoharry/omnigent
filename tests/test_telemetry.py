@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from omnigent.runtime import get_services
 from omnigent.telemetry.surface import classify_surface
 
 # ── classify_surface ────────────────────────────────────────────────────────
@@ -653,7 +654,7 @@ def test_resolve_harness_none_when_agent_store_uninitialized() -> None:
     conv.harness_override = None
     conv.agent_id = "ag_abc"
 
-    with patch("omnigent.runtime._globals._agent_store", None):
+    with patch.object(get_services(), "agent_store", None):
         assert _resolve_harness(conv) is None
 
 
@@ -670,7 +671,7 @@ def test_resolve_harness_none_when_agent_not_in_store() -> None:
     mock_store = MagicMock()
     mock_store.get.return_value = None
 
-    with patch("omnigent.runtime._globals._agent_store", mock_store):
+    with patch.object(get_services(), "agent_store", mock_store):
         assert _resolve_harness(conv) is None
 
 
@@ -705,7 +706,7 @@ def test_resolve_harness_sdk_via_config_key() -> None:
     mock_cache.load.return_value = loaded
 
     with (
-        patch("omnigent.runtime._globals._agent_store", mock_store),
+        patch.object(get_services(), "agent_store", mock_store),
         patch("omnigent.runtime.get_agent_cache", return_value=mock_cache),
     ):
         assert _resolve_harness(conv) == "claude-sdk"
@@ -742,7 +743,7 @@ def test_resolve_harness_sdk_via_executor_type() -> None:
     mock_cache.load.return_value = loaded
 
     with (
-        patch("omnigent.runtime._globals._agent_store", mock_store),
+        patch.object(get_services(), "agent_store", mock_store),
         patch("omnigent.runtime.get_agent_cache", return_value=mock_cache),
     ):
         assert _resolve_harness(conv) == "claude-sdk"
@@ -761,7 +762,7 @@ def test_resolve_harness_returns_none_on_exception() -> None:
     mock_store = MagicMock()
     mock_store.get.side_effect = OSError("disk read error")
 
-    with patch("omnigent.runtime._globals._agent_store", mock_store):
+    with patch.object(get_services(), "agent_store", mock_store):
         assert _resolve_harness(conv) is None
 
 

@@ -25,7 +25,7 @@ import shutil
 
 import pytest
 
-from omnigent.runtime.workflow import _find_spec_by_name
+from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 from omnigent.spec.types import (
     AgentSpec,
     BuiltinToolConfig,

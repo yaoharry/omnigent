@@ -3267,11 +3267,11 @@ def _should_inject_openai_env_auth_for_executor(
     # Databricks/gateway routing). Configured sources reach the runner via
     # OMNIGENT_CONFIG_HOME, so skipping injection loses nothing. The env
     # bake remains only for users whose SOLE credential is the env key.
+    from omnigent.harnesses.config.providers import _load_global_auth
     from omnigent.onboarding.provider_config import (
         default_provider_for_harness,
         load_config,
     )
-    from omnigent.runtime.workflow import _load_global_auth
 
     if default_provider_for_harness(load_config(), harness) is not None:
         return False

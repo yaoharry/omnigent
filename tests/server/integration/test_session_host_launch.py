@@ -53,6 +53,7 @@ from omnigent.host.frames import (
 from omnigent.host.identity import HostIdentity
 from omnigent.runner.identity import token_bound_runner_id
 from omnigent.runner.transports.ws_tunnel.frames import HelloFrame
+from omnigent.runtime import get_services
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
 from omnigent.server.host_registry import HostConnection
@@ -2511,7 +2512,7 @@ async def test_offline_runner_serves_file_content_and_changes_from_host(
     (ws / "new.txt").write_text("brand new\n")
 
     from omnigent.errors import ErrorCode, OmnigentError
-    from omnigent.runtime import _globals, set_runner_router
+    from omnigent.runtime import set_runner_router
 
     comm = await _connect_host(app)
     session = await _inline_launch_session(client, comm)
@@ -2530,7 +2531,7 @@ async def test_offline_runner_serves_file_content_and_changes_from_host(
             del session_id, conversation
             raise OmnigentError("runner is offline", code=ErrorCode.RUNNER_UNAVAILABLE)
 
-    prior_router = _globals._runner_router
+    prior_router = get_services().runner_router
     set_runner_router(_OfflineRunnerRouter())  # type: ignore[arg-type]
 
     # The server must fall back to reading the workspace over the still-open
@@ -2579,7 +2580,7 @@ async def test_offline_runner_no_host_still_returns_503(
     Guards against the fallback masking a genuinely unreachable workspace.
     """
     from omnigent.errors import ErrorCode, OmnigentError
-    from omnigent.runtime import _globals, set_runner_router
+    from omnigent.runtime import set_runner_router
 
     comm = await _connect_host(app)
     session = await _inline_launch_session(client, comm)
@@ -2595,7 +2596,7 @@ async def test_offline_runner_no_host_still_returns_503(
             del session_id, conversation
             raise OmnigentError("runner is offline", code=ErrorCode.RUNNER_UNAVAILABLE)
 
-    prior_router = _globals._runner_router
+    prior_router = get_services().runner_router
     set_runner_router(_OfflineRunnerRouter())  # type: ignore[arg-type]
 
     # Drop the host tunnel so no fallback source remains.

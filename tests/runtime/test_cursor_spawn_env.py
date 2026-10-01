@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from omnigent.runtime.workflow import _build_cursor_spawn_env
+from omnigent.harnesses.config.spawn_env import _build_cursor_spawn_env
 from omnigent.spec.types import (
     AgentSpec,
     ApiKeyAuth,

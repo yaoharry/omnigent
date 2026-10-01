@@ -829,7 +829,7 @@ def _global_auth_configured() -> bool:
         auth configuration.
     """
     try:
-        from omnigent.runtime.workflow import _load_global_auth
+        from omnigent.harnesses.config.providers import _load_global_auth
 
         return _load_global_auth() is not None
     except Exception as exc:

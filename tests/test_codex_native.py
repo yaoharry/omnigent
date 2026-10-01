@@ -12686,15 +12686,15 @@ def test_resolve_native_codex_launch_no_provider_sets_login_fallback_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No configured provider -> summary names the login fallback (#2745)."""
+    from omnigent.harnesses.config import providers
     from omnigent.onboarding import ambient, detected, provider_config
-    from omnigent.runtime import workflow
 
     monkeypatch.setattr(provider_config, "load_config", dict)
     monkeypatch.setattr(ambient, "codex_config_detection", lambda: None)
     monkeypatch.setattr(detected, "dismissed_detection_names", lambda cfg: frozenset())
     monkeypatch.setattr(detected, "effective_config_with_detected", lambda cfg: {})
     monkeypatch.setattr(provider_config, "default_provider_for_harness", lambda cfg, harness: None)
-    monkeypatch.setattr(workflow, "_load_global_auth", lambda: None)
+    monkeypatch.setattr(providers, "_load_global_auth", lambda: None)
 
     launch = codex_native_app_server.resolve_native_codex_launch(model=None)
 
@@ -12728,9 +12728,9 @@ def test_resolve_native_codex_launch_connect_broker_managed_host(
 ) -> None:
     """No configured provider, but a managed connect host (host-only [omnigent]
     profile + broker sidecar) routes Codex through the gateway with broker auth."""
+    from omnigent.harnesses.config import providers
     from omnigent.inner import databricks_executor
     from omnigent.onboarding import ambient, detected, provider_config
-    from omnigent.runtime import workflow
 
     # Everything unconfigured, so resolution reaches the last-resort branch.
     monkeypatch.setattr(provider_config, "load_config", dict)
@@ -12738,7 +12738,7 @@ def test_resolve_native_codex_launch_connect_broker_managed_host(
     monkeypatch.setattr(detected, "dismissed_detection_names", lambda cfg: frozenset())
     monkeypatch.setattr(detected, "effective_config_with_detected", lambda cfg: {})
     monkeypatch.setattr(provider_config, "default_provider_for_harness", lambda cfg, harness: None)
-    monkeypatch.setattr(workflow, "_load_global_auth", lambda: None)
+    monkeypatch.setattr(providers, "_load_global_auth", lambda: None)
     # Managed connect signal: [omnigent] profile host + broker sidecar present.
     monkeypatch.setattr(
         databricks_executor, "_read_databrickscfg_host", lambda profile: "https://ws.example"
@@ -12766,16 +12766,16 @@ def test_resolve_native_codex_launch_no_broker_sidecar_falls_back_to_login(
 ) -> None:
     """No broker sidecar (e.g. a laptop) → connect-broker branch is skipped and
     Codex falls back to CLI login, so non-sandbox auth is untouched."""
+    from omnigent.harnesses.config import providers
     from omnigent.inner import databricks_executor
     from omnigent.onboarding import ambient, detected, provider_config
-    from omnigent.runtime import workflow
 
     monkeypatch.setattr(provider_config, "load_config", dict)
     monkeypatch.setattr(ambient, "codex_config_detection", lambda: None)
     monkeypatch.setattr(detected, "dismissed_detection_names", lambda cfg: frozenset())
     monkeypatch.setattr(detected, "effective_config_with_detected", lambda cfg: {})
     monkeypatch.setattr(provider_config, "default_provider_for_harness", lambda cfg, harness: None)
-    monkeypatch.setattr(workflow, "_load_global_auth", lambda: None)
+    monkeypatch.setattr(providers, "_load_global_auth", lambda: None)
     monkeypatch.setattr(
         databricks_executor, "_read_databrickscfg_host", lambda profile: "https://ws.example"
     )

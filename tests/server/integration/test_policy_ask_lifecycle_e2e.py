@@ -33,7 +33,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
-from omnigent.runtime import pending_elicitations, session_stream
+from omnigent.runtime import get_services, pending_elicitations, session_stream
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.runtime.policies.builder import invalidate_default_policy_specs_cache
 from omnigent.server.app import create_app
@@ -117,9 +117,8 @@ async def client(
 
     # Wire the policy store into the runtime global so
     # ``get_policy_store()`` returns it during evaluate.
-    from omnigent.runtime import _globals
 
-    monkeypatch.setattr(_globals, "_policy_store", SqlAlchemyPolicyStore(db_uri))
+    monkeypatch.setattr(get_services(), "policy_store", SqlAlchemyPolicyStore(db_uri))
 
     transport = httpx.ASGITransport(app=policy_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:

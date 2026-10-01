@@ -870,7 +870,8 @@ async def test_codex_native_model_options_query_model_list(
 
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_provider_for_build", lambda *_args, **_kwargs: None
+        "omnigent.harnesses.config.providers._resolve_provider_for_build",
+        lambda *_args, **_kwargs: None,
     )
     conv_id = "68ba0a62ebe928d26adf37c8974ce1eb"
     monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")

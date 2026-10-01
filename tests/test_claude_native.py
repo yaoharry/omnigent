@@ -11440,7 +11440,7 @@ def _isolate_to_connect_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
         "omnigent.onboarding.provider_config.default_provider_for_harness",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr("omnigent.runtime.workflow._load_global_auth", lambda: None)
+    monkeypatch.setattr("omnigent.harnesses.config.providers._load_global_auth", lambda: None)
     monkeypatch.setattr(
         "omnigent.onboarding.detected.effective_config_with_detected", lambda cfg: cfg
     )
@@ -11628,7 +11628,7 @@ def test_configured_provider_wins_over_connect_broker_spec_branch(
 
     sentinel = claude_native.ClaudeNativeUcodeConfig(env={"MARK": "spec-provider"})
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_provider_for_build",
+        "omnigent.harnesses.config.providers._resolve_provider_for_build",
         lambda spec, harness_type, actual_harness: object(),  # spec resolves to a provider entry
     )
     monkeypatch.setattr(
@@ -11704,7 +11704,7 @@ def test_resolve_native_claude_config_spec_path_reaches_connect_broker(
 
     # Spec routes to no provider and carries no ucode profile.
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_provider_for_build",
+        "omnigent.harnesses.config.providers._resolve_provider_for_build",
         lambda spec, harness_type, actual_harness: None,
     )
     monkeypatch.setattr(
@@ -11743,7 +11743,7 @@ def test_resolve_native_claude_config_spec_api_key_auth_skips_connect_broker(
     # The shared resolver returns None for an explicit ApiKeyAuth (it leaves bare
     # keys to Claude's own login), which previously fell through to the broker.
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_provider_for_build",
+        "omnigent.harnesses.config.providers._resolve_provider_for_build",
         lambda spec, harness_type, actual_harness: None,
     )
     monkeypatch.setattr(

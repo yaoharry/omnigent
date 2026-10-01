@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from omnigent.runtime.workflow import (
+from omnigent.harnesses.config.spawn_env import (
     _build_acp_spawn_env,
     _build_claude_sdk_spawn_env,
     _build_codex_spawn_env,

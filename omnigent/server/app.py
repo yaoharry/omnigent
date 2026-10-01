@@ -66,15 +66,10 @@ from omnigent.harness_plugins import (
 )
 from omnigent.resources import examples as _examples_resources
 from omnigent.runtime import (
-    get_terminal_registry,
+    get_caps,
     pending_elicitations,
-    set_harness_process_manager,
-    set_runner_direct_attach_resolver,
-    set_runner_router,
-    set_runner_ws_factory,
 )
 from omnigent.runtime.agent_cache import AgentCache
-from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
 from omnigent.server import managed_host_keepalive, session_live_state, shutdown_state
 from omnigent.server.auth import AuthProvider, SharingMode
 from omnigent.server.background_session_titles import (
@@ -82,6 +77,7 @@ from omnigent.server.background_session_titles import (
     RunnerBackgroundTitleGenerator,
 )
 from omnigent.server.feature_flags import Feature, FeatureFlags, resolve_feature_flags
+from omnigent.server.lifecycle import ServerLifecycle
 from omnigent.server.managed_hosts import ManagedSandboxDeployment
 from omnigent.server.managed_sandbox_reaper import ManagedSandboxReaper
 from omnigent.server.mcp_pool import ServerMcpPool
@@ -1561,149 +1557,48 @@ def create_app(
     async def _lifespan(
         app_inst: FastAPI,
     ) -> AsyncIterator[None]:
-        """FastAPI lifespan: start/stop the harness process manager
-        and tear down the tmux terminal registry on shutdown.
+        """FastAPI lifespan delegated to :class:`ServerLifecycle`."""
 
-        On startup: construct + start the
-        :class:`HarnessProcessManager` and stash it on
-        ``app.state.harness_process_manager`` for workflow
-        dispatch to use when routing through the harness contract
-        (see ``designs/SERVER_HARNESS_CONTRACT.md`` §Process
-        management).
+        async def initialize_server() -> None:
+            _ensure_default_agents(agent_store, artifact_store, agent_cache)
 
-        On shutdown: shut down the harness process manager (which
-        terminates every per-conversation runner subprocess and
-        cleans up the per-AP-instance dir) and close every live
-        tmux terminal in the :class:`TerminalRegistry`. Terminal
-        cleanup is best-effort with per-instance timeouts; see
-        ``designs/OMNIGENT_TERMINAL_BRIDGE.md`` §4.4.
+            from omnigent.policies.registry import load_registry
 
-        :param app_inst: The FastAPI app, used to attach
-            per-AP state via ``app_inst.state.*``.
-        """
-        # Bump AnyIO default thread limiter from 40 → 200; every
-        # ``asyncio.to_thread`` and FastAPI sync route grabs one.
-        from anyio import to_thread as _to_thread
+            load_registry(extra_modules=policy_modules)
 
-        _to_thread.current_default_thread_limiter().total_tokens = 200
+            if _bootstrap_result is not None and _bootstrap_result.open_url:
+                from omnigent.server.auth import env_var_is_truthy
 
-        # Initialise usage telemetry (fire-and-forget; no-op when disabled).
-        from omnigent.telemetry import init_client as _init_telemetry
+                if env_var_is_truthy("OMNIGENT_ACCOUNTS_AUTO_OPEN", default=True):
+                    import webbrowser
 
-        _init_telemetry(config=server_config)
+                    try:
+                        webbrowser.open(_bootstrap_result.open_url)
+                    except Exception as exc:  # noqa: BLE001
+                        _logger.warning(
+                            "accounts: auto-open browser failed (%s) — open the "
+                            "server URL in a browser instead",
+                            exc,
+                        )
 
-        # Apply OMNIGENT_LOG_LEVEL to the omnigent namespace after
-        # uvicorn's dictConfig runs (dictConfig resets existing handlers,
-        # making a pre-run basicConfig call ineffective).
-        import os as _os
+        def install_notifier() -> Callable[[], None]:
+            from omnigent.server.routes.sessions import configure_subagent_block_notifier
 
-        _log_level_name = _os.environ.get("OMNIGENT_LOG_LEVEL", "INFO").upper()
-        logging.getLogger("omnigent").setLevel(getattr(logging, _log_level_name, logging.INFO))
+            return configure_subagent_block_notifier(conversation_store, runner_router)
 
-        harness_pm = HarnessProcessManager()
-        await harness_pm.start()
-        # Store on both ``app.state`` (canonical, accessible from
-        # routes) AND a runtime-module global (workflows access it
-        # via ``get_harness_process_manager()`` because workflows
-        # can't easily receive non-serializable args).
-        app_inst.state.harness_process_manager = harness_pm
-        set_harness_process_manager(harness_pm)
+        def make_ws_factory() -> Any:
+            from omnigent.server._runner_ws_tunnel import make_tunnel_ws_factory
 
-        set_runner_router(runner_router)
+            return make_tunnel_ws_factory(runner_router, tunnel_registry)
 
-        # Wake a blocked sub-agent's immediate parent: hooks
-        # ``pending_elicitations.record_publish`` to post a ``[System: …]``
-        # notice to the parent's ``/events``. Uninstalled at teardown so a
-        # fresh app instance doesn't inherit a prior run's observer (matters
-        # for multi-app test setups).
-        from omnigent.server.routes.sessions import (
-            configure_subagent_block_notifier,
-        )
+        def make_direct_attach_resolver() -> Any:
+            from omnigent.server._runner_ws_tunnel import make_direct_attach_resolver
 
-        _uninstall_subagent_block_notifier = configure_subagent_block_notifier(
-            conversation_store,
-            runner_router,
-        )
+            return make_direct_attach_resolver(runner_router, tunnel_registry)
 
-        from omnigent.runner.resource_registry import (
-            SessionResourceRegistry,
-        )
-        from omnigent.runtime import set_resource_registry
-
-        resource_reg = SessionResourceRegistry(
-            terminal_registry=get_terminal_registry(),
-        )
-        set_resource_registry(resource_reg)
-
-        # Install the tunnel-backed WS factory so browser terminal
-        # attach can proxy frames over the same persistent WebSocket
-        # the runner already uses for HTTP.
-        from omnigent.server._runner_ws_tunnel import (
-            make_direct_attach_resolver,
-            make_tunnel_ws_factory,
-        )
-
-        set_runner_ws_factory(make_tunnel_ws_factory(runner_router, tunnel_registry))
-        # Companion resolver: lets the terminals API surface a runner's
-        # advertised loopback attach endpoint so a browser on the same
-        # machine can skip the relay entirely.
-        set_runner_direct_attach_resolver(
-            make_direct_attach_resolver(runner_router, tunnel_registry)
-        )
-
-        # MCP execution moved to the runner (designs/RUNNER_MCP.md);
-        # SessionFilesystemRegistry moved to the runner. Both
-        # warmup blocks deleted here.
-
-        _ensure_default_agents(agent_store, artifact_store, agent_cache)
-
-        # Populate the policy registry (builtins + user-configured
-        # modules) so GET /v1/policy-registry serves the catalog.
-        from omnigent.policies.registry import load_registry
-
-        load_registry(extra_modules=policy_modules)
-
-        # Accounts first-run: open the browser after uvicorn has bound
-        # the port. bootstrap_admin sets open_url to the loopback base
-        # URL on a needs-setup boot so the browser lands on the
-        # Create-admin form. Gated on (a) bootstrap asked for an open,
-        # and (b) the auto-open env var is truthy (default ON; CLI
-        # passes OMNIGENT_ACCOUNTS_AUTO_OPEN=0 for --no-open). Broad
-        # try so a missing display / browser never blocks startup.
-        if _bootstrap_result is not None and _bootstrap_result.open_url:
-            from omnigent.server.auth import env_var_is_truthy
-
-            if env_var_is_truthy("OMNIGENT_ACCOUNTS_AUTO_OPEN", default=True):
-                import webbrowser
-
-                try:
-                    webbrowser.open(_bootstrap_result.open_url)
-                except Exception as exc:  # noqa: BLE001
-                    _logger.warning(
-                        "accounts: auto-open browser failed (%s) — open the "
-                        "server URL in a browser instead",
-                        exc,
-                    )
-
-        metrics_publish_task = asyncio.create_task(
-            publish_server_metrics_periodically(
-                server_metrics,
-                otel_publisher=server_metrics_otel,
-            )
-        )
-        # Runner ``runner_last_seen`` is refreshed per-tunnel from each
-        # runner tunnel's ping loop (``runner_tunnel._ping_loop``), inside
-        # that handler's ``workspace_scope`` — not from a lifespan sweep,
-        # which would run context-free (default workspace) over a
-        # workspace-blind registry and never stamp a multi-tenant row.
-
-        # Recurring-task scheduler: arm a timer per active
-        # scheduled task and fire the injected ``on_fire`` callback on
-        # schedule. The callback (see scheduled.fire) re-reads the row,
-        # creates + owner-grants a session, launches its runner, and records
-        # the run — all fire-and-forget so the timer re-arms immediately.
-        scheduled_task_scheduler: ScheduledTaskScheduler | None = None
-        if scheduled_task_store is not None:
+        def scheduler_factory() -> ScheduledTaskScheduler | None:
+            if scheduled_task_store is None:
+                return None
             from omnigent.server.scheduled.fire import FireDeps, build_on_fire, build_run_now
 
             fire_deps = FireDeps(
@@ -1719,93 +1614,62 @@ def create_app(
                 tunnel_registry=tunnel_registry,
                 file_store=file_store,
                 artifact_store=artifact_store,
-                # Managed-sandbox execution target: provision a fresh sandbox per
-                # fire. ``managed_launches`` is created during app construction
-                # (before this lifespan runs), so it is already on state here.
                 sandbox_config=sandbox_config,
                 managed_launches=app_inst.state.managed_launches,
                 app_state=app_inst.state,
             )
-            on_fire = build_on_fire(fire_deps)
-            # The manual "run now" trigger reuses the same fire path (dispatch /
-            # preflight / in-flight guard) as the scheduler; it only differs in
-            # allowing a paused task to fire. Exposed on app.state for the
-            # POST /v1/scheduled-tasks/{id}/run route.
             app_inst.state.scheduled_task_run_now = build_run_now(fire_deps)
-            scheduled_task_scheduler = ScheduledTaskScheduler(
+            return ScheduledTaskScheduler(
                 store=scheduled_task_store,
-                on_fire=on_fire,
+                on_fire=build_on_fire(fire_deps),
             )
-            app_inst.state.scheduled_task_scheduler = scheduled_task_scheduler
-            # Scheduled tasks are a non-critical subsystem: a failure loading the
-            # schedule (e.g. a DB error listing active tasks) must not take
-            # down server boot. Log and continue with the scheduler unstarted.
-            try:
-                await scheduled_task_scheduler.start()
-            except Exception as exc:
-                _logger.exception(
-                    "scheduled task scheduler failed to start; continuing "
-                    "without recurring tasks (%s)",
-                    exc,
-                )
 
-            # Run completion is event-driven (persist_scheduled_run_completion
-            # fires from _publish_status the instant a fired conversation's turn
-            # ends — no poll). The only orphan backstop is a lazy-on-read
-            # force-fail of stale ``running`` runs on the scheduled-task read
-            # endpoints (see routes/scheduled_tasks.py); there is no startup
-            # sweep and no periodic reconcile.
-
-        managed_sandbox_reaper: ManagedSandboxReaper | None = None
-        if sandbox_config is not None and sandbox_config.reaper.enabled:
+        def reaper_factory() -> ManagedSandboxReaper | None:
+            if sandbox_config is None or not sandbox_config.reaper.enabled:
+                return None
             if host_store is None:
                 _logger.warning(
                     "Managed sandbox reaper is enabled but no host store is configured; "
                     "the reaper will not run"
                 )
-            else:
-                managed_sandbox_reaper = ManagedSandboxReaper(
-                    host_store=host_store,
-                    sandbox_config=sandbox_config,
-                )
-                app_inst.state.managed_sandbox_reaper = managed_sandbox_reaper
-                await managed_sandbox_reaper.start()
+                return None
+            from omnigent.server.managed_sandbox_reaper import ManagedSandboxReaper
 
-        try:
-            yield
-        finally:
-            if managed_sandbox_reaper is not None:
-                await managed_sandbox_reaper.shutdown()
-            # Run completion is event-driven (the _publish_status hook) plus a
-            # lazy-on-read stale backstop — there is no run-reconciler task to
-            # cancel. Only the per-job scheduler holds timers that need stopping.
-            if scheduled_task_scheduler is not None:
-                scheduled_task_scheduler.stop()
-            metrics_publish_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await metrics_publish_task
-            # Stop in-flight background managed-sandbox launches so a
-            # slow provision doesn't outlive the ASGI shutdown (the
-            # sandbox itself, if already provisioned, is reaped by the
-            # provider lifetime cap — see the hook's docstring).
+            return ManagedSandboxReaper(host_store=host_store, sandbox_config=sandbox_config)
+
+        async def cancel_managed_launches() -> None:
             from omnigent.server.routes.sessions import cancel_managed_launch_tasks
 
             await cancel_managed_launch_tasks()
-            await background_title_coordinator.shutdown()
-            _uninstall_subagent_block_notifier()
-            set_resource_registry(None)
-            set_runner_ws_factory(None)
-            set_runner_direct_attach_resolver(None)
-            set_runner_router(None)
-            await runner_router.aclose()
 
-            set_harness_process_manager(None)
-            await harness_pm.shutdown()
-            await get_terminal_registry().shutdown()
-            # Shut down all AP-side MCP connections opened by the proxy
-            # endpoint. Best-effort — individual close failures are logged
-            # inside shutdown_all().
-            await _mcp_pool.shutdown_all()
+        async def publish_metrics(
+            metrics: ServerPerformanceMetrics,
+            otel_publisher: ServerMetricsOtelPublisher,
+        ) -> None:
+            await publish_server_metrics_periodically(
+                metrics,
+                otel_publisher=otel_publisher,
+            )
+
+        lifecycle = ServerLifecycle(
+            app=app_inst,
+            runner_router=runner_router,
+            background_title_coordinator=background_title_coordinator,
+            mcp_pool=_mcp_pool,
+            server_metrics=server_metrics,
+            server_metrics_otel=server_metrics_otel,
+            server_config=server_config,
+            install_notifier=install_notifier,
+            make_ws_factory=make_ws_factory,
+            make_direct_attach_resolver=make_direct_attach_resolver,
+            initialize=initialize_server,
+            cancel_managed_launches=cancel_managed_launches,
+            publish_metrics=publish_metrics,
+            scheduler_factory=scheduler_factory if scheduled_task_store is not None else None,
+            reaper_factory=reaper_factory,
+        )
+        async with lifecycle.lifespan():
+            yield
 
     from omnigent.server.auth import AccountAuthorityMiddleware, UnifiedAuthProvider
 
@@ -2926,11 +2790,11 @@ def create_app(
         # Both come from one helper, so the flag can never claim routing is off
         # for a deployment whose sources say a router would answer.
         try:
-            from omnigent.runtime._globals import _caps
             from omnigent.server.routing_backend import routing_available, routing_sources
 
-            smart_routing_enabled = routing_available(_caps)
-            smart_routing_sources = routing_sources(_caps)
+            caps = get_caps()
+            smart_routing_enabled = routing_available(caps)
+            smart_routing_sources = routing_sources(caps)
         except ImportError:
             smart_routing_enabled = False
             smart_routing_sources = {"external": False, "oss": False}

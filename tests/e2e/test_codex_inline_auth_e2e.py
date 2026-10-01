@@ -14,9 +14,9 @@ import pytest
 import tomllib
 
 from omnigent.harnesses.codex_native.app_server import resolve_native_codex_launch
+from omnigent.harnesses.config.spawn_env import _build_codex_spawn_env
 from omnigent.inner.codex_harness import _build_codex_executor
 from omnigent.inner.executor import ExecutorError, TurnComplete
-from omnigent.runtime.workflow import _build_codex_spawn_env
 from omnigent.spec.types import AgentSpec, ApiKeyAuth, ExecutorSpec
 from tests.e2e._harness_probes import cli_unavailable_reason
 from tests.e2e.test_codex_gateway_stale_bearer_e2e import FRESH_TOKEN, _FakeGateway

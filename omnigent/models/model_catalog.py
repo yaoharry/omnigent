@@ -3,7 +3,7 @@
 Backs the ``sys_list_models`` runner builtin: for each sub-agent worker
 of an orchestrator's spec (plus the orchestrator brain itself), resolve
 the model provider the spawn/launch paths would actually use — the same
-precedence as :func:`omnigent.runtime.workflow._resolve_provider_for_build`
+precedence as :func:`omnigent.harnesses.config.providers._resolve_provider_for_build`
 followed by the legacy auth fallthrough the spawn-env builders apply —
 and enumerate that provider's live model listing. The resolved provider
 *kind* is also what the ``sys_session_send`` dispatch gate consults for
@@ -599,7 +599,7 @@ def resolve_model_provider(spec: object, harness: str | None) -> ResolvedModelPr
 def _resolve_model_provider_unsafe(spec: object, harness: str | None) -> ResolvedModelProvider:
     """Resolve the provider, propagating failures to the catch-all wrapper.
 
-    Step 1 reuses :func:`~omnigent.runtime.workflow._resolve_provider_for_build`
+    Step 1 reuses :func:`~omnigent.harnesses.config.providers._resolve_provider_for_build`
     verbatim (the precedence the spawn-env builders and native launch
     paths share). Step 2 mirrors the builders' PER-HARNESS legacy
     fallthrough (see :func:`_provider_from_legacy_auth`) — the builders
@@ -611,7 +611,7 @@ def _resolve_model_provider_unsafe(spec: object, harness: str | None) -> Resolve
     """
     # Imported lazily; workflow.py imports broadly and this module is
     # consumed from the runner's dispatch path.
-    from omnigent.runtime.workflow import _resolve_provider_for_build
+    from omnigent.harnesses.config.providers import _resolve_provider_for_build
 
     canonical_harness = canonicalize_harness(harness) or harness
     if (canonical_harness or "") in _CURSOR_HARNESSES:
@@ -706,8 +706,8 @@ def _legacy_claude_sdk_provider(spec: AgentSpec) -> ResolvedModelProvider:
     :param spec: The worker's (sub-)agent spec.
     :returns: A :class:`ResolvedModelProvider`.
     """
+    from omnigent.harnesses.config.providers import _load_global_auth
     from omnigent.onboarding.configure_models import default_base_url_for_family
-    from omnigent.runtime.workflow import _load_global_auth
     from omnigent.spec.types import ApiKeyAuth, DatabricksAuth
 
     auth = spec.executor.auth
@@ -746,8 +746,8 @@ def _legacy_openai_agents_provider(spec: AgentSpec) -> ResolvedModelProvider:
     :param spec: The worker's (sub-)agent spec.
     :returns: A :class:`ResolvedModelProvider`.
     """
+    from omnigent.harnesses.config.providers import _load_global_auth
     from omnigent.onboarding.configure_models import default_base_url_for_family
-    from omnigent.runtime.workflow import _load_global_auth
     from omnigent.spec.types import ApiKeyAuth, DatabricksAuth
 
     spec_auth = spec.executor.auth
@@ -887,8 +887,8 @@ def _acp_provider_entry(spec: AgentSpec) -> ProviderEntry | None:
     :raises OmnigentError: If the explicitly selected provider cannot be resolved.
     """
     from omnigent.errors import ErrorCode, OmnigentError
+    from omnigent.harnesses.config.providers import _resolve_provider_for_build
     from omnigent.inference_config import load_runtime_inference_config, resolve_bound_provider
-    from omnigent.runtime.workflow import _resolve_provider_for_build
     from omnigent.spec.types import ProviderAuth
 
     bound = resolve_bound_provider(

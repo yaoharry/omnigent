@@ -32,6 +32,7 @@ from omnigent.host.git_worktree import (
     list_worktrees,
     remove_worktree,
 )
+from omnigent.runtime import get_services
 from omnigent.server.auth import RESERVED_USER_LOCAL
 from omnigent.server.routes._host_worktree import (
     WORKTREE_ROOT_LABEL_KEY,
@@ -519,12 +520,12 @@ async def test_delete_with_flag_when_runner_offline_and_host_offline_returns_con
     the user owns it — cleanup cannot proceed because the host/runner
     tunnel is down.
     """
-    from omnigent.runtime import _globals, set_runner_router
+    from omnigent.runtime import set_runner_router
 
     _upsert_host_row(db_uri)
     conv_id = _make_worktree_conversation(db_uri)
 
-    prior = _globals._runner_router
+    prior = get_services().runner_router
     set_runner_router(_OfflineRunnerRouter())  # type: ignore[arg-type]
     try:
         resp = await client.delete(f"/v1/sessions/{conv_id}?delete_branch=true")
@@ -545,12 +546,12 @@ async def test_delete_with_flag_when_runner_offline_but_host_online_cleans_up(
     a still-connected host must still send ``host.remove_worktree`` and
     delete the session — failing this would block cleanup that can proceed.
     """
-    from omnigent.runtime import _globals, set_runner_router
+    from omnigent.runtime import set_runner_router
 
     captured = await _register_fake_host(app, db_uri)
     conv_id = _make_worktree_conversation(db_uri)
 
-    prior = _globals._runner_router
+    prior = get_services().runner_router
     set_runner_router(_OfflineRunnerRouter())  # type: ignore[arg-type]
     try:
         resp = await client.delete(f"/v1/sessions/{conv_id}?delete_branch=true")

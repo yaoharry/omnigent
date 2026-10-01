@@ -21,7 +21,7 @@ from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.host.frames import HOST_CAPABILITIES, HostHelloFrame
 from omnigent.native.native_coding_agents import CLAUDE_NATIVE_AGENT_NAME
 from omnigent.runtime import (
-    _globals,
+    get_services,
     session_stream,
     set_runner_client,
     set_runner_direct_attach_resolver,
@@ -469,9 +469,9 @@ class _FakeRunnerRouter:
 
 @pytest.fixture
 def runner_globals_reset() -> Iterator[None]:
-    prior_client = _globals._runner_client
-    prior_router = _globals._runner_router
-    prior_direct = _globals._runner_direct_attach_resolver
+    prior_client = get_services().runner_client
+    prior_router = get_services().runner_router
+    prior_direct = get_services().runner_direct_attach_resolver
     set_runner_client(None)
     set_runner_router(None)
     set_runner_direct_attach_resolver(None)

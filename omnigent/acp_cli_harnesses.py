@@ -10,7 +10,7 @@ Rows are pure data; every registration a row needs derives from this table:
   ``omnigent/onboarding/harness_readiness.py`` (binary on PATH)
 - setup steps and one-click installability:
   ``omnigent/onboarding/harness_install.py``
-- spawn env: :func:`omnigent.runtime.workflow._build_acp_cli_spawn_env`
+- spawn env: :func:`omnigent.harnesses.config.spawn_env._build_acp_cli_spawn_env`
 - dispatch: ``_build_spawn_env_from_spec`` in ``omnigent/runner/app.py``
 - live e2e matrix exclusion:
   ``tests/e2e/omnigent/test_run_harness_without_agent_e2e.py``

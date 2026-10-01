@@ -18,7 +18,7 @@ import pytest
 import yaml
 
 from omnigent.errors import ErrorCode, OmnigentError
-from omnigent.runtime.workflow import _build_acp_spawn_env
+from omnigent.harnesses.config.spawn_env import _build_acp_spawn_env
 from omnigent.spec.types import AgentSpec, ExecutorSpec, LLMConfig, ProviderAuth
 
 _AGENTS = [
@@ -514,7 +514,7 @@ def test_runner_rejects_failed_explicit_provider_resolution(
             raise RuntimeError("provider configuration unavailable")
 
         monkeypatch.setattr(
-            "omnigent.runtime.workflow._resolve_provider_for_build", fail_resolution
+            "omnigent.harnesses.config.providers._resolve_provider_for_build", fail_resolution
         )
     spec = _make_spec(harness="acp:goose", model="model-a", provider="bifrost")
     expected_code = (

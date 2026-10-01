@@ -341,7 +341,7 @@ def test_api_key_auth_precludes_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     bare_spec = SimpleNamespace(executor=SimpleNamespace(auth=None))
 
     # No global auth configured: only a spec-level key precludes.
-    monkeypatch.setattr("omnigent.runtime.workflow._load_global_auth", lambda: None)
+    monkeypatch.setattr("omnigent.harnesses.config.providers._load_global_auth", lambda: None)
     assert dc.api_key_auth_precludes_broker(key_spec) is True
     assert dc.api_key_auth_precludes_broker(dbx_spec) is False
     assert dc.api_key_auth_precludes_broker(bare_spec) is False
@@ -350,7 +350,7 @@ def test_api_key_auth_precludes_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     # A GLOBAL ApiKeyAuth must also preclude the broker — including in the spec
     # branch when the spec declares no auth of its own (the reroute bug this guards).
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._load_global_auth", lambda: ApiKeyAuth(api_key="sk-g")
+        "omnigent.harnesses.config.providers._load_global_auth", lambda: ApiKeyAuth(api_key="sk-g")
     )
     assert dc.api_key_auth_precludes_broker(None) is True
     assert dc.api_key_auth_precludes_broker(bare_spec) is True

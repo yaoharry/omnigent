@@ -102,7 +102,9 @@ def _break_provider_resolution(
     def fail_resolution(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("provider configuration unavailable")
 
-    monkeypatch.setattr("omnigent.runtime.workflow._resolve_provider_for_build", fail_resolution)
+    monkeypatch.setattr(
+        "omnigent.harnesses.config.providers._resolve_provider_for_build", fail_resolution
+    )
     return 500
 
 

@@ -600,10 +600,10 @@ async def test_model_selection_through_spawn_env_and_harness_request(
 ) -> None:
     from unittest.mock import AsyncMock
 
+    from omnigent.harnesses.config.spawn_env import _build_cursor_spawn_env
     from omnigent.inner.cursor_harness import _build_cursor_executor
     from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter
     from omnigent.runtime.harnesses._scaffold import PolicyVerdictPayload, TurnContext
-    from omnigent.runtime.workflow import _build_cursor_spawn_env
     from omnigent.server.schemas import CreateResponseRequest
     from omnigent.spec.types import AgentSpec, ApiKeyAuth, ExecutorSpec
 

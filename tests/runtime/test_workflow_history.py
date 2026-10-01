@@ -6,7 +6,7 @@ from typing import Any
 
 from omnigent.entities import ConversationItem, MessageData, PagedList, SlashCommandData
 from omnigent.entities.pagination import paginate_in_memory
-from omnigent.runtime.workflow import _load_initial_history
+from omnigent.runtime.history import load_initial_history as _load_initial_history
 
 
 class _ConversationStore:

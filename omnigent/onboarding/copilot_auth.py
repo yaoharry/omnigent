@@ -1,7 +1,7 @@
 """GitHub Copilot token storage for ``omnigent setup`` and the runtime.
 
 Copilot is deliberately outside the anthropic/openai provider-family + gateway
-machinery (see :func:`omnigent.runtime.workflow._build_copilot_spawn_env`): the
+machinery (see :func:`omnigent.harnesses.config.spawn_env._build_copilot_spawn_env`): the
 GitHub Copilot SDK (``github-copilot-sdk``) talks only to GitHub's Copilot
 backend, authenticated by a **GitHub token** — never the Databricks AI gateway.
 It therefore has no ``providers:`` family entry, but a user should still be able

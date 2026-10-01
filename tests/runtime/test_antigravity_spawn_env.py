@@ -21,11 +21,9 @@ import pytest
 import yaml
 
 from omnigent.errors import ErrorCode, OmnigentError
-from omnigent.runtime import workflow as wf
-from omnigent.runtime.workflow import (
-    _build_antigravity_spawn_env,
-    configure_agent_harness_with_provider,
-)
+from omnigent.harnesses.config import providers, spawn_env
+from omnigent.harnesses.config.providers import configure_agent_harness_with_provider
+from omnigent.harnesses.config.spawn_env import _build_antigravity_spawn_env
 from omnigent.spec.types import (
     AgentSpec,
     ApiKeyAuth,
@@ -143,7 +141,9 @@ def test_global_auth_is_not_adopted_when_spec_has_no_auth(
     creds). Against the old global-``auth:`` fallback this would have set
     ``HARNESS_ANTIGRAVITY_API_KEY`` to the OpenAI key.
     """
-    monkeypatch.setattr(wf, "_load_global_auth", lambda: ApiKeyAuth(api_key="sk-openai-global"))
+    monkeypatch.setattr(
+        providers, "_load_global_auth", lambda: ApiKeyAuth(api_key="sk-openai-global")
+    )
     env = _build_antigravity_spawn_env(_make_spec(model="gemini-3-pro", auth=None))
     assert "HARNESS_ANTIGRAVITY_API_KEY" not in env
 
@@ -163,7 +163,7 @@ def test_vertex_config_threads_project_and_location() -> None:
 
 def test_databricks_auth_ignored_with_warning(caplog: pytest.LogCaptureFixture) -> None:
     """``DatabricksAuth`` is unsupported: no env var emitted, and a warning logged."""
-    with caplog.at_level(logging.WARNING, logger=wf.__name__):
+    with caplog.at_level(logging.WARNING, logger=spawn_env.__name__):
         env = _build_antigravity_spawn_env(
             _make_spec(model="gemini-3-pro", auth=DatabricksAuth(profile="dev"))
         )
@@ -259,7 +259,9 @@ def test_stored_key_used_and_global_auth_ignored(
     ``auth:`` key (meant for another harness) has no influence at all. Against
     the old behavior the global key was a fallback tier; now it is never read.
     """
-    monkeypatch.setattr(wf, "_load_global_auth", lambda: ApiKeyAuth(api_key="sk-openai-global"))
+    monkeypatch.setattr(
+        providers, "_load_global_auth", lambda: ApiKeyAuth(api_key="sk-openai-global")
+    )
     monkeypatch.setenv("GEMINI_KEY_SRC", "AIza_stored_123")
     _write_antigravity_config(_isolate_global_config, "env:GEMINI_KEY_SRC")
     env = _build_antigravity_spawn_env(_make_spec(model="gemini-3-pro", auth=None))
@@ -291,7 +293,7 @@ def test_ambient_gemini_key_adopted_when_no_config(
     Mirrors the other key-only SDK harnesses: an exported key (or a host
     launched with one) authenticates a no-auth spec without per-spec config.
     """
-    monkeypatch.setattr(wf, "_load_global_auth", lambda: None)
+    monkeypatch.setattr(providers, "_load_global_auth", lambda: None)
     monkeypatch.setenv("GEMINI_API_KEY", "AIza_ambient_456")
     env = _build_antigravity_spawn_env(_make_spec(model="gemini-3-pro", auth=None))
     assert env["HARNESS_ANTIGRAVITY_API_KEY"] == "AIza_ambient_456"
@@ -308,7 +310,9 @@ def test_ambient_gemini_key_wins_over_global_openai_auth(
     the old global-``auth:`` fallback the builder would have shipped
     ``sk-openai-global`` instead of the real Gemini key.
     """
-    monkeypatch.setattr(wf, "_load_global_auth", lambda: ApiKeyAuth(api_key="sk-openai-global"))
+    monkeypatch.setattr(
+        providers, "_load_global_auth", lambda: ApiKeyAuth(api_key="sk-openai-global")
+    )
     monkeypatch.setenv("GEMINI_API_KEY", "AIza_ambient_456")
     env = _build_antigravity_spawn_env(_make_spec(model="gemini-3-pro", auth=None))
     assert env["HARNESS_ANTIGRAVITY_API_KEY"] == "AIza_ambient_456"

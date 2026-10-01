@@ -4,7 +4,7 @@ Unit tests for the ``sys_terminal_*`` tool family.
 Per ``designs/OMNIGENT_TERMINAL_BRIDGE.md`` §8.2, these tests use the
 established ``tests/tools/builtins/test_terminal.py`` pattern from
 the deleted legacy suite: monkeypatch
-``_globals._terminal_registry`` to inject a fresh
+``get_services().terminal_registry`` to inject a fresh
 :class:`TerminalRegistry`, construct tools directly, drive them
 via ``tool.invoke()``. The tests run real tmux subprocesses
 (skipped if tmux is not on PATH) so they cover the full
@@ -24,7 +24,7 @@ import pytest
 
 from omnigent.entities.conversation import MessageData
 from omnigent.inner.datamodel import OSEnvSandboxSpec, OSEnvSpec, TerminalEnvSpec
-from omnigent.runtime import _globals
+from omnigent.runtime import get_services
 from omnigent.spec.types import AgentSpec
 from omnigent.stores.conversation_store.sqlalchemy_store import (
     SqlAlchemyConversationStore,
@@ -56,7 +56,7 @@ pytestmark = pytest.mark.skipif(
 def registry(monkeypatch: pytest.MonkeyPatch) -> TerminalRegistry:
     """Fresh :class:`TerminalRegistry` installed as the singleton.
 
-    Monkeypatches ``_globals._terminal_registry`` so
+    Monkeypatches ``get_services().terminal_registry`` so
     ``get_terminal_registry()`` finds it. Auto-reverses on test
     teardown — each test gets a clean registry.
 
@@ -64,7 +64,7 @@ def registry(monkeypatch: pytest.MonkeyPatch) -> TerminalRegistry:
     :returns: The newly-installed :class:`TerminalRegistry`.
     """
     reg = TerminalRegistry()
-    monkeypatch.setattr(_globals, "_terminal_registry", reg)
+    monkeypatch.setattr(get_services(), "terminal_registry", reg)
     return reg
 
 

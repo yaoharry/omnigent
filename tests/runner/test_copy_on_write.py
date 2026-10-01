@@ -75,7 +75,8 @@ def test_harness_spawn_transports_prepared_session_namespace(spec, tmp_path, mon
         executor=ExecutorSpec(type="omnigent", config={"harness": "openai-agents"}),
     )
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._build_openai_agents_sdk_spawn_env", lambda spec: {}
+        "omnigent.harnesses.config.spawn_env._build_openai_agents_sdk_spawn_env",
+        lambda spec, *, cwd, workdir: {},
     )
     policy = SandboxPolicy(
         backend_type="linux_bwrap",
@@ -316,7 +317,8 @@ async def test_background_turn_registers_tools_from_shared_environment(
     registry = SessionResourceRegistry(runner_workspace=tmp_path)
     monkeypatch.setattr(registry, "_create_primary_env", Mock(return_value=environment))
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._build_openai_agents_sdk_spawn_env", lambda spec: {}
+        "omnigent.harnesses.config.spawn_env._build_openai_agents_sdk_spawn_env",
+        lambda spec, *, cwd, workdir: {},
     )
     monkeypatch.setattr(
         "omnigent.inner.os_env.create_os_environment",

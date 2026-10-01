@@ -297,6 +297,16 @@ def test_builtin_native_provider_paths_resolve() -> None:
             assert callable(resolved), f"{provider.key}.{hook} did not resolve to a callable"
 
 
+def test_builtin_spawn_env_builder_paths_resolve() -> None:
+    """Headless harness rows resolve through the common spawn-env contract."""
+    builders = hp.spawn_env_builders()
+    expected = set(hp.model_env_keys())
+    assert expected <= set(builders)
+    for harness in expected:
+        builder = hp.load_object(builders[harness])
+        assert callable(builder), harness
+
+
 def test_builtin_native_provider_bridge_id_label_keys_match_constants() -> None:
     """The derived bridge_id_label_key equals each harness's real constant.
 

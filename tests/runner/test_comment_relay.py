@@ -35,6 +35,7 @@ from omnigent.harnesses.claude_native.bridge import (
 )
 from omnigent.inner.datamodel import TerminalEnvSpec
 from omnigent.runner import create_runner_app
+from omnigent.runtime import get_services
 from omnigent.spec.types import AgentSpec, ToolsConfig
 from omnigent.terminals import TerminalListEntry
 from tests.runner.helpers import NullServerClient, make_test_terminal_instance
@@ -969,10 +970,9 @@ def terminal_registry_singleton(monkeypatch: pytest.MonkeyPatch) -> None:
     :param monkeypatch: Pytest monkeypatch fixture.
     :returns: None.
     """
-    from omnigent.runtime import _globals as rt_globals
     from omnigent.terminals.registry import TerminalRegistry
 
-    monkeypatch.setattr(rt_globals, "_terminal_registry", TerminalRegistry())
+    monkeypatch.setattr(get_services(), "terminal_registry", TerminalRegistry())
 
 
 def _spec_with_terminals() -> AgentSpec:

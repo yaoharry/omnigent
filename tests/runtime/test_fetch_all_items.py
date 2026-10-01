@@ -14,7 +14,8 @@ import pytest
 from omnigent.entities.conversation import CompactionData, ConversationItem, MessageData
 from omnigent.entities.pagination import PagedList
 from omnigent.errors import _STALE_CURSOR_ATTEMPTS, StaleCursorError
-from omnigent.runtime.workflow import _load_initial_history, fetch_all_items
+from omnigent.runtime.history import fetch_all_items
+from omnigent.runtime.history import load_initial_history as _load_initial_history
 
 
 def _item(item_id: str) -> ConversationItem:

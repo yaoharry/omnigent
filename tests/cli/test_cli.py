@@ -3911,11 +3911,11 @@ def test_run_from_openclaw_dispatches_ephemeral_acp_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One-shot OpenClaw launch reaches ACP spawn env without writing config."""
+    from omnigent.harnesses.config.spawn_env import _build_acp_spawn_env
     from omnigent.onboarding.openclaw_config import (
         OpenClawAgentEntry,
         OpenClawDiscovery,
     )
-    from omnigent.runtime.workflow import _build_acp_spawn_env
     from omnigent.spec import load
 
     source_path = tmp_path / "config.json"
@@ -4039,7 +4039,7 @@ def test_run_harness_acp_slug_resolves_client_side(
     """
     import yaml
 
-    from omnigent.runtime.workflow import _build_acp_spawn_env
+    from omnigent.harnesses.config.spawn_env import _build_acp_spawn_env
     from omnigent.spec import load
 
     config_home = tmp_path / "omnigent-config"
@@ -4087,7 +4087,7 @@ def test_run_harness_acp_slug_embeds_with_remote_server(
     """
     import yaml
 
-    from omnigent.runtime.workflow import _build_acp_spawn_env
+    from omnigent.harnesses.config.spawn_env import _build_acp_spawn_env
     from omnigent.spec import load
 
     config_home = tmp_path / "omnigent-config"
@@ -4151,7 +4151,7 @@ def test_run_harness_acp_slug_embeds_all_fields(
     """
     import yaml
 
-    from omnigent.runtime.workflow import _build_acp_spawn_env
+    from omnigent.harnesses.config.spawn_env import _build_acp_spawn_env
     from omnigent.spec import load
 
     config_home = tmp_path / "omnigent-config"

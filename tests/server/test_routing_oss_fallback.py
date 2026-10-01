@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from omnigent.runtime import get_services
 from omnigent.server.routing_backend import RoutingBackends, routing_sources, select_router
 from omnigent.server.smart_routing import (
     ExternalRoutingClient,
@@ -92,7 +93,7 @@ def _deployment(
         routing_backends=RoutingBackends(external=external, local=local),
         routing_settings=RoutingSettings(),
     )
-    with patch("omnigent.runtime._globals._caps", new=caps):
+    with patch.object(get_services(), "caps", new=caps):
         yield caps
 
 

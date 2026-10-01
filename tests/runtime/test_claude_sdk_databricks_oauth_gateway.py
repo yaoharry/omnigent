@@ -39,7 +39,7 @@ from pathlib import Path
 
 import pytest
 
-from omnigent.runtime.workflow import _build_claude_sdk_spawn_env
+from omnigent.harnesses.config.spawn_env import _build_claude_sdk_spawn_env
 from omnigent.spec.types import (
     AgentSpec,
     DatabricksAuth,
@@ -61,7 +61,7 @@ def _isolate_global_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     """
     monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_catalog_default_model",
+        "omnigent.harnesses.config.providers._resolve_catalog_default_model",
         lambda provider_name, family, *, context: f"catalog-{provider_name}-{family}-default",
     )
 
@@ -89,11 +89,11 @@ def oauth_databrickscfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(cfg_path))
     # Stub out ucode state so we test the no-ucode path (fresh install).
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.get_workspace_url_for_profile",
+        "omnigent.harnesses.config.providers.get_workspace_url_for_profile",
         lambda profile: WORKSPACE_HOST,
     )
     monkeypatch.setattr(
-        "omnigent.runtime.workflow.read_ucode_state",
+        "omnigent.harnesses.config.providers.read_ucode_state",
         lambda workspace_url: None,
     )
     return cfg_path
@@ -247,7 +247,7 @@ def test_openai_agents_databricks_auth_works_for_contrast(
 
     :param oauth_databrickscfg: Fixture providing the OAuth U2M config.
     """
-    from omnigent.runtime.workflow import _build_openai_agents_sdk_spawn_env
+    from omnigent.harnesses.config.spawn_env import _build_openai_agents_sdk_spawn_env
 
     spec = AgentSpec(
         spec_version=1,

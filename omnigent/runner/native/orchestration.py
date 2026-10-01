@@ -1986,7 +1986,7 @@ def _opencode_native_model_from_spec(
     if agent_spec is None:
         return None
     try:
-        from omnigent.runtime.workflow import _resolve_spec_model
+        from omnigent.harnesses.config.providers import _resolve_spec_model
 
         spec = agent_spec.spec if isinstance(agent_spec, ResolvedSpec) else agent_spec
         return _resolve_spec_model(spec)
@@ -10195,7 +10195,7 @@ def _resolve_sub_agent_spec_entry(parent_entry: Any, sub_agent_name: str) -> Res
     :returns: The wrapped child entry, or ``None`` when the name does not
         resolve.
     """
-    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
     parent_spec = _unwrap_resolved_spec(parent_entry)
     child_spec = _find_spec_by_name(parent_spec, sub_agent_name)

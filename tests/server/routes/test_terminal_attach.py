@@ -29,7 +29,7 @@ from starlette.websockets import WebSocketDisconnect
 from omnigent.entities import Conversation, SessionPermission
 from omnigent.inner.terminal import TerminalInstance
 from omnigent.runtime import (
-    _globals,
+    get_services,
     set_runner_client,
     set_runner_router,
     set_runner_ws_factory,
@@ -164,11 +164,11 @@ def server_registry(tmp_path: Path) -> Iterator[TerminalRegistry]:
     :yields: The installed :class:`TerminalRegistry`.
     """
     del tmp_path  # placeholder for shape consistency
-    prior = _globals._terminal_registry
+    prior = get_services().terminal_registry
     registry = TerminalRegistry()
-    _globals._terminal_registry = registry
+    get_services().terminal_registry = registry
     yield registry
-    _globals._terminal_registry = prior
+    get_services().terminal_registry = prior
 
 
 @pytest.fixture
@@ -182,9 +182,9 @@ def runner_client_reset() -> Iterator[None]:
     leak its client/factory into the fallback-path tests and silently
     change their behavior.
     """
-    prior_client = _globals._runner_client
-    prior_router = _globals._runner_router
-    prior_factory = _globals._runner_ws_factory
+    prior_client = get_services().runner_client
+    prior_router = get_services().runner_router
+    prior_factory = get_services().runner_ws_factory
     set_runner_client(None)
     set_runner_router(None)
     set_runner_ws_factory(None)

@@ -259,7 +259,7 @@ def api_key_auth_precludes_broker(spec: AgentSpec | None) -> bool:
     # No spec, or a spec that declares no auth of its own → consult the global
     # ``auth:`` block, which is the only remaining place a key intent can live.
     if spec is None or getattr(spec.executor, "auth", None) is None:
-        from omnigent.runtime.workflow import _load_global_auth
+        from omnigent.harnesses.config.providers import _load_global_auth
 
         return isinstance(_load_global_auth(), ApiKeyAuth)
     return False

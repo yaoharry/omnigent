@@ -1019,7 +1019,7 @@ class CapturingRunnerClient:
     ``/events`` and signals when a ``cost_approval_popup`` arrives. A real
     class (not MagicMock) so an unexpected call shape fails loud rather than
     silently returning a mock. Install it as the global runner client with
-    ``monkeypatch.setattr("omnigent.runtime._globals._runner_client", c)``;
+    ``monkeypatch.setattr(get_services(), "runner_client", c)``;
     the server's forward falls back to it when no runner is bound.
 
     :param posted: Accumulated ``{"url", "json"}`` records of each POST.

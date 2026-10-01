@@ -16,6 +16,12 @@ import yaml
 from omnigent.errors import OmnigentError
 from omnigent.harnesses.claude_native.main import resolve_native_claude_config
 from omnigent.harnesses.codex_native.app_server import resolve_native_codex_launch
+from omnigent.harnesses.config.providers import _resolve_provider_for_build
+from omnigent.harnesses.config.spawn_env import (
+    _build_acp_cli_spawn_env,
+    _build_claude_sdk_spawn_env,
+    _build_codex_spawn_env,
+)
 from omnigent.harnesses.opencode_native.provider import resolve_bound_opencode_gateway
 from omnigent.harnesses.pi_native.credentials import (
     _live_family_model_entries,
@@ -28,12 +34,6 @@ from omnigent.models.model_catalog import (
     acp_curated_models,
     list_models_for_worker,
     validate_acp_model,
-)
-from omnigent.runtime.workflow import (
-    _build_acp_cli_spawn_env,
-    _build_claude_sdk_spawn_env,
-    _build_codex_spawn_env,
-    _resolve_provider_for_build,
 )
 from omnigent.spec.types import AgentSpec, ExecutorSpec, ProviderAuth
 
@@ -191,8 +191,8 @@ def test_bound_claude_sdk_preserves_a_literal_anthropic_prefix() -> None:
 async def test_bound_pi_sdk_preserves_literal_suffix_through_executor_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from omnigent.harnesses.config.spawn_env import _build_pi_spawn_env
     from omnigent.inner.pi_harness import _build_pi_executor
-    from omnigent.runtime.workflow import _build_pi_spawn_env
 
     profile = _profile()
     profile["inference"] = {
@@ -318,7 +318,7 @@ def test_opencode_uses_bound_gateway_and_exact_model() -> None:
 
 
 def test_bound_qwen_rejects_a_responses_only_endpoint() -> None:
-    from omnigent.runtime.workflow import _build_qwen_spawn_env
+    from omnigent.harnesses.config.spawn_env import _build_qwen_spawn_env
 
     profile = {
         "providers": {

@@ -42,7 +42,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
-from omnigent.runtime import session_stream
+from omnigent.runtime import get_services, session_stream
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
@@ -126,14 +126,14 @@ async def client(
     :param db_uri: Test database URI.
     :param monkeypatch: Pytest monkeypatch fixture.
     """
-    from omnigent.runtime import _globals, set_harness_process_manager
+    from omnigent.runtime import set_harness_process_manager
     from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
 
     pm = HarnessProcessManager(tmp_parent=tmp_path / "harness_pm")
     await pm.start()
     set_harness_process_manager(pm)
 
-    monkeypatch.setattr(_globals, "_policy_store", SqlAlchemyPolicyStore(db_uri))
+    monkeypatch.setattr(get_services(), "policy_store", SqlAlchemyPolicyStore(db_uri))
 
     transport = httpx.ASGITransport(app=policy_app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:

@@ -1,7 +1,7 @@
 """Cursor API-key credential storage for ``omnigent setup`` and the runtime.
 
 Cursor is deliberately outside the anthropic/openai provider-family + gateway
-machinery (see :func:`omnigent.runtime.workflow._build_cursor_spawn_env`): the
+machinery (see :func:`omnigent.harnesses.config.spawn_env._build_cursor_spawn_env`): the
 Cursor SDK (``cursor-sdk``) talks only to Cursor's own backend via a
 ``CURSOR_API_KEY`` — which it requires — never the Databricks AI gateway. It
 therefore has no ``providers:`` family entry, but a user should still be able to
@@ -20,7 +20,7 @@ The reference is resolved with the same :func:`resolve_secret` resolver the
 provider families use. A dedicated block (rather than the shared global
 ``auth:`` block) is required because ``auth:`` is the *gateway* credential the
 SDK harnesses inherit when their spec declares no auth
-(:func:`omnigent.runtime.workflow._load_global_auth`) — a Cursor key parked
+(:func:`omnigent.harnesses.config.providers._load_global_auth`) — a Cursor key parked
 there would be mis-consumed by claude-sdk / codex / pi / openai-agents.
 """
 

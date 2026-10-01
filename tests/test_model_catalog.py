@@ -2327,7 +2327,9 @@ def test_acp_provider_resolution_failure_does_not_become_empty_catalog(
     def fail_resolution(*_args: object, **_kwargs: object) -> None:
         raise failure
 
-    monkeypatch.setattr("omnigent.runtime.workflow._resolve_provider_for_build", fail_resolution)
+    monkeypatch.setattr(
+        "omnigent.harnesses.config.providers._resolve_provider_for_build", fail_resolution
+    )
     spec = _worker_spec("acp:custom", auth=ProviderAuth(name="bifrost"))
     with pytest.raises(OmnigentError, match="Cannot resolve ACP provider 'bifrost'") as error:
         model_catalog.acp_curated_models(spec)

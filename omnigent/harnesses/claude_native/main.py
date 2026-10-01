@@ -3014,7 +3014,8 @@ def _provider_config_for_native_claude(entry: ProviderEntry) -> ClaudeNativeUcod
     ``ANTHROPIC_BASE_URL`` plus a token ``apiKeyHelper`` and the default
     model — so a Claude Code terminal launched by ``omnigent`` routes
     through the configured provider exactly like the in-process claude-sdk
-    harness does (:func:`omnigent.runtime.workflow.configure_agent_harness_with_provider`).
+    harness does (see
+    :func:`omnigent.harnesses.config.providers.configure_agent_harness_with_provider`).
 
     :param entry: A resolved provider entry. Only ``key`` / ``gateway`` /
         ``local`` kinds serving the ``anthropic`` family produce a config.
@@ -3391,7 +3392,7 @@ def resolve_native_claude_config(
     ``omnigent claude`` and the runner's host-spawned auto-create), so the
     native harness honors ``omnigent setup`` exactly like the in-process
     claude-sdk harness. Precedence mirrors
-    :func:`omnigent.runtime.workflow._resolve_provider_for_build`:
+    :func:`omnigent.harnesses.config.providers._resolve_provider_for_build`:
 
     1. when a *spec* is given, its resolved provider (spec ``executor.auth``
        → explicit per-family default → global ``auth:`` → ``databricks-*``
@@ -3412,6 +3413,7 @@ def resolve_native_claude_config(
         only need the routing shape pass ``False`` to stay network-free.
     :returns: The launch config, or ``None`` to use Claude's own login.
     """
+    from omnigent.harnesses.config.providers import _load_global_auth, _resolve_provider_for_build
     from omnigent.host.databricks_credential import api_key_auth_precludes_broker
     from omnigent.inference_config import (
         binding_for_harness,
@@ -3424,7 +3426,6 @@ def resolve_native_claude_config(
         default_provider_for_harness,
         load_config,
     )
-    from omnigent.runtime.workflow import _load_global_auth, _resolve_provider_for_build
     from omnigent.spec.types import DatabricksAuth
 
     inference_config = load_runtime_inference_config(load_config())

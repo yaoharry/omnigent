@@ -118,3 +118,12 @@ async def test_lifespan_starts_periodic_metrics_otel_publisher(
 
     async with app.router.lifespan_context(app):
         await asyncio.wait_for(publisher_started.wait(), timeout=1.0)
+
+
+async def test_server_lifespan_does_not_create_runner_owned_resources(
+    app: FastAPI,
+) -> None:
+    """Harness processes and session-resource registries belong to the runner."""
+    async with app.router.lifespan_context(app):
+        assert not hasattr(app.state, "harness_process_manager")
+        assert not hasattr(app.state, "session_resource_registry")

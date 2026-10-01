@@ -310,7 +310,7 @@ def _resolve_sub_agent_spec(
         return None
     # Lazy import: workflow imports the policies package at runtime, so a
     # module-level import here would be circular.
-    from omnigent.runtime.workflow import _find_spec_by_name
+    from omnigent.spec.tree import find_sub_agent as _find_spec_by_name
 
     child_spec = _find_spec_by_name(spec, conversation.sub_agent_name)
     if child_spec is None or child_spec is spec:

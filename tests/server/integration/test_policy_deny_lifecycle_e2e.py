@@ -23,6 +23,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
+from omnigent.runtime import get_services
 from omnigent.runtime.agent_cache import AgentCache
 from omnigent.server.app import create_app
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
@@ -105,7 +106,7 @@ async def policy_client(
 
     # Patch the runtime global so the policy engine picks up session policies.
     policy_store = SqlAlchemyPolicyStore(db_uri)
-    monkeypatch.setattr("omnigent.runtime._globals._policy_store", policy_store)
+    monkeypatch.setattr(get_services(), "policy_store", policy_store)
 
     # Allow the make_fixed_action_callable factory through the registry
     # allowlist. In production this would be added via policy_modules config.

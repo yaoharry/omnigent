@@ -89,6 +89,9 @@ described under [Review state labels](#review-state-labels).
 
 ## Development setup
 
+See [Architecture](docs/ARCHITECTURE.md) for the server, runner, and harness
+boundaries and where to make a change.
+
 This is a Python package with an optional frontend under `web/`. Use
 [`uv`](https://docs.astral.sh/uv/) for local development:
 

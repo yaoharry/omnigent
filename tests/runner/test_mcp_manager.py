@@ -859,7 +859,7 @@ def test_strip_mcp_tool_prefix_preserves_bare_double_underscore() -> None:
     Only strip Claude-SDK MCP-prefixed names; pass everything else
     through.
     """
-    from omnigent.runtime.workflow import _strip_mcp_tool_prefix
+    from omnigent.runtime.harnesses._executor_adapter import _strip_mcp_tool_prefix
 
     # Claude-SDK shape: stripped to the bare name.
     assert _strip_mcp_tool_prefix("mcp__jira__jira_search_issues") == "jira_search_issues"

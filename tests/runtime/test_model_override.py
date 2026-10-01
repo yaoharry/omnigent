@@ -11,7 +11,9 @@ forward it.
 
 from __future__ import annotations
 
-from omnigent.runtime.workflow import _apply_request_model_override
+from omnigent.runtime.compaction_service import (
+    apply_request_model_override as _apply_request_model_override,
+)
 from omnigent.spec.types import LLMConfig
 
 

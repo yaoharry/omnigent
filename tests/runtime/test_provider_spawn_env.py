@@ -34,8 +34,11 @@ import pytest
 import yaml as _yaml
 
 from omnigent.errors import OmnigentError
-from omnigent.onboarding import ambient, harness_install
-from omnigent.runtime.workflow import (
+from omnigent.harnesses.config.providers import (
+    _resolve_catalog_default_model,
+    _resolve_provider_for_build,
+)
+from omnigent.harnesses.config.spawn_env import (
     _build_claude_sdk_spawn_env,
     _build_codex_spawn_env,
     _build_goose_spawn_env,
@@ -44,9 +47,8 @@ from omnigent.runtime.workflow import (
     _build_openai_agents_sdk_spawn_env,
     _build_pi_spawn_env,
     _build_qwen_spawn_env,
-    _resolve_catalog_default_model,
-    _resolve_provider_for_build,
 )
+from omnigent.onboarding import ambient, harness_install
 from omnigent.spec.types import (
     AgentSpec,
     ApiKeyAuth,
@@ -91,7 +93,7 @@ def _clear_ambient_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(
-        "omnigent.runtime.workflow._resolve_catalog_default_model",
+        "omnigent.harnesses.config.providers._resolve_catalog_default_model",
         lambda provider_name, family, *, context: _CATALOG_DEFAULTS[(provider_name, family)],
     )
     monkeypatch.setattr(
@@ -1144,14 +1146,14 @@ def test_databricks_kind_default_routes_through_profile(
     # Stub ucode enrichment: it would otherwise read ~/.databrickscfg + ucode
     # state for the profile. We assert the profile wiring this branch owns,
     # independent of whether ucode state exists on the test machine.
-    import omnigent.runtime.workflow as workflow_mod
+    from omnigent.harnesses.config import providers
 
     def _noop_ucode(env: dict[str, str], profile: str | None, *, harness_type: str) -> None:
         # Record the profile passed through so the test can confirm delegation.
         if profile is not None:
             env["_TEST_UCODE_PROFILE"] = profile
 
-    monkeypatch.setattr(workflow_mod, "configure_agent_harness_with_ucode", _noop_ucode)
+    monkeypatch.setattr(providers, "configure_agent_harness_with_ucode", _noop_ucode)
     spec = _make_spec(harness="claude-sdk")
 
     env = _build_claude_sdk_spawn_env(spec, workdir=None)
@@ -1247,11 +1249,11 @@ def test_codex_spec_databricks_auth_routes_via_synthesized_provider(
     )
     with (
         patch(
-            "omnigent.runtime.workflow.get_workspace_url_for_profile",
+            "omnigent.harnesses.config.providers.get_workspace_url_for_profile",
             return_value="https://workspace.databricks.com",
         ),
         patch(
-            "omnigent.runtime.workflow.read_ucode_state",
+            "omnigent.harnesses.config.providers.read_ucode_state",
             return_value=UcodeWorkspaceState(
                 workspace_url="https://workspace.databricks.com",
                 agents={
