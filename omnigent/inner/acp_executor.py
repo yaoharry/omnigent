@@ -47,18 +47,23 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import json
 import logging
 import math
+import ntpath
 import os
 import secrets
 import shlex
+import shutil
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias
 
+from omnigent.debug_logging import debug_event
+from omnigent.errors import ErrorCategory, ErrorImpact, ErrorPhase
 from omnigent.inner import _proc
 from omnigent.inner._acp_omnigent_mcp import OmnigentAcpMcp
 from omnigent.inner.acp_extension import NO_ACP_EXTENSION, AcpExtension
@@ -181,6 +186,25 @@ _STDERR_QUOTED_LIMIT = 1000
 
 # ACP protocol version this executor targets (matches Goose 1.38 / Qwen).
 _PROTOCOL_VERSION = 1
+
+
+def _safe_basename(
+    value: os.PathLike[str] | os.PathLike[bytes] | str | bytes | None,
+    *,
+    limit: int = 128,
+) -> str | None:
+    """Return a bounded basename without exposing parent directories."""
+    if value is None:
+        return None
+    try:
+        text = os.fsdecode(value)
+    except (TypeError, ValueError):
+        text = str(value)
+    name = ntpath.basename(text.rstrip("/\\"))
+    if not name:
+        return None
+    safe = "".join(ch for ch in name if ch.isprintable() and ch not in "\r\n\t")
+    return safe[:limit] or None
 
 
 @dataclass(frozen=True)
@@ -406,7 +430,18 @@ class AcpExecutor(Executor):
         """
         self._config = config
         self._extension = extension
-        self._cwd = cwd or os.getcwd()
+        self._cwd_error: OSError | None = None
+        if cwd:
+            self._cwd = cwd
+        else:
+            try:
+                self._cwd = os.getcwd()
+            except OSError as exc:
+                # Keep construction lazy: the harness must emit a structured
+                # ExecutorError on its normal startup boundary instead of
+                # failing before the turn context exists.
+                self._cwd = os.curdir
+                self._cwd_error = exc
         self._os_env = os_env
         # Advertise ``clientCapabilities.fs`` so the agent delegates file
         # reads/writes back to us (executed through the Omnigent OSEnvironment,
@@ -496,6 +531,113 @@ class AcpExecutor(Executor):
     # Low-level ACP transport
     # ------------------------------------------------------------------
 
+    def _safe_command_name(self) -> str:
+        """Return the configured executable's basename for user-facing text."""
+        return _safe_basename(self._argv[0]) or "ACP agent"
+
+    def _cwd_exists(self) -> bool:
+        """Return whether the configured launch directory is still a directory."""
+        if self._cwd_error is not None:
+            return False
+        try:
+            return os.path.isdir(self._cwd)
+        except OSError:
+            return False
+
+    def _resolve_configured_executable(self, env: dict[str, str]) -> str | None:
+        """Resolve the command using the same environment the child receives.
+
+        Commands containing a path component are resolved relative to the child
+        cwd; bare commands use the child's ``PATH`` rather than the wrapper's
+        ambient environment. The returned path is internal only and is never
+        included in the user-facing startup detail.
+        """
+        command = self._argv[0]
+        if os.path.dirname(command):
+            candidate = command
+            if not os.path.isabs(command):
+                candidate = os.path.join(self._cwd, command)
+            candidate = os.path.normpath(candidate)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+            return None
+        path_value = env.get("PATH", os.defpath)
+        spawn_path = []
+        for entry in path_value.split(os.pathsep):
+            directory = entry or "."
+            if not os.path.isabs(directory):
+                directory = os.path.join(self._cwd, directory)
+            spawn_path.append(directory)
+        return shutil.which(command, path=os.pathsep.join(spawn_path))
+
+    def _validate_startup_paths(self, env: dict[str, str]) -> None:
+        """Fail before spawn when cwd or the configured CLI is unavailable."""
+        if self._cwd_error is not None:
+            raise self._cwd_error
+        if not self._cwd_exists():
+            raise FileNotFoundError(
+                errno.ENOENT,
+                "ACP agent working directory is unavailable",
+                self._cwd,
+            )
+        if self._resolve_configured_executable(env) is None:
+            raise FileNotFoundError(
+                errno.ENOENT,
+                "ACP agent executable is unavailable",
+                self._safe_command_name(),
+            )
+
+    def _safe_spawn_failure(self, exc: BaseException) -> RuntimeError | None:
+        """Convert ENOENT spawn failures into path-safe actionable details."""
+        if not isinstance(exc, OSError) or exc.errno != errno.ENOENT:
+            return None
+        if not self._cwd_exists():
+            return RuntimeError(
+                "ACP agent working directory is unavailable; choose a valid workspace."
+            )
+        missing = _safe_basename(exc.filename)
+        if missing is not None and missing != self._safe_command_name():
+            return RuntimeError(
+                f"ACP agent '{self._safe_command_name()}' startup could not proceed because "
+                f"'{missing}' was unavailable; check its installation or configuration."
+            )
+        return RuntimeError(
+            f"ACP agent executable '{self._safe_command_name()}' was not found or could "
+            "not be started; check its installation or interpreter."
+        )
+
+    def _log_startup_failure(
+        self,
+        exc: BaseException,
+        *,
+        phase: str,
+    ) -> None:
+        """Log one structured, path-safe startup diagnostic before wrapping *exc*."""
+        missing_filename = _safe_basename(exc.filename) if isinstance(exc, OSError) else None
+        logger.error(
+            "ACP agent %s startup failed during %s",
+            self._config.name,
+            phase,
+            extra=debug_event(
+                "acp_startup_failed",
+                agent=self._config.name,
+                startup_phase=phase,
+                command=self._safe_command_name(),
+                cwd_exists=self._cwd_exists(),
+                process_started=self._proc is not None and self._proc.returncode is None,
+                errno=exc.errno if isinstance(exc, OSError) else None,
+                missing_filename=missing_filename,
+                error_phase=ErrorPhase.HARNESS_STARTUP.value,
+                error_impact=ErrorImpact.BLOCKING.value,
+                error_category=(
+                    ErrorCategory.USER.value
+                    if self._cwd_error is not None or not self._cwd_exists()
+                    else ErrorCategory.CONFIG.value
+                ),
+                exception_type=type(exc).__name__,
+            ),
+        )
+
     async def _start_process(self) -> None:
         """Start the configured ACP agent as an asyncio subprocess.
 
@@ -508,22 +650,30 @@ class AcpExecutor(Executor):
         self._image_supported = False
         self._authenticated = False
         self._auth_advertisement = {}
-        env = self._build_spawn_env()
-        launch_path, argv = self._sandbox_launch(tuple(env.keys()))
-        _STREAM_LIMIT = 16 * 1024 * 1024
-        self._proc = await asyncio.create_subprocess_exec(
-            launch_path,
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            cwd=self._cwd,
-            limit=_STREAM_LIMIT,
-            # Own session/group: the sandbox launcher forks the real agent,
-            # and without a group boundary teardown reaches only the wrapper.
-            **_proc.spawn_kwargs(),
-        )
+        try:
+            env = self._build_spawn_env()
+            self._validate_startup_paths(env)
+            launch_path, argv = self._sandbox_launch(tuple(env.keys()))
+            _STREAM_LIMIT = 16 * 1024 * 1024
+            self._proc = await asyncio.create_subprocess_exec(
+                launch_path,
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                cwd=self._cwd,
+                limit=_STREAM_LIMIT,
+                # Own session/group: the sandbox launcher forks the real agent,
+                # and without a group boundary teardown reaches only the wrapper.
+                **_proc.spawn_kwargs(),
+            )
+        except Exception as exc:
+            self._log_startup_failure(exc, phase="process_start")
+            safe_failure = self._safe_spawn_failure(exc)
+            if safe_failure is not None:
+                raise safe_failure from exc
+            raise
         self._reader_task = asyncio.create_task(self._read_stdout())
         self._stderr_task = asyncio.create_task(self._read_stderr())
 
@@ -584,7 +734,8 @@ class AcpExecutor(Executor):
         printed — that text ("no API key", "unknown flag") is usually the actual
         diagnosis — and the log file so the full traceback is findable.
         """
-        detail = describe_exception(exc)
+        safe_failure = self._safe_spawn_failure(exc)
+        detail = str(safe_failure) if safe_failure is not None else describe_exception(exc)
         if self._recent_stderr:
             tail = " | ".join(list(self._recent_stderr)[-_STDERR_QUOTED_LINES:])
             # Cap here too, not just per line in the reader: this string ends up
@@ -1745,9 +1896,17 @@ class AcpExecutor(Executor):
         try:
             if self._proc is None or self._proc.returncode is not None:
                 await self._start_process()
+        except Exception as exc:  # noqa: BLE001 — process-start boundary is handled above
+            yield ExecutorError(message=self._startup_error_message(exc), retryable=False)
+            return
+
+        startup_phase = "initialize"
+        try:
             await self._ensure_initialized()
+            startup_phase = "session_new"
             session_id = await self._ensure_session()
         except Exception as exc:  # noqa: BLE001
+            self._log_startup_failure(exc, phase=startup_phase)
             yield ExecutorError(message=self._startup_error_message(exc), retryable=False)
             return
 

@@ -15,6 +15,8 @@ Two layers:
 from __future__ import annotations
 
 import asyncio
+import errno
+import logging
 import os
 import shlex
 import sys
@@ -49,6 +51,16 @@ from omnigent.inner.executor import (
     describe_exception,
 )
 
+
+def _startup_record(caplog: pytest.LogCaptureFixture) -> logging.LogRecord:
+    """Return the one structured ACP startup-failure record."""
+    return next(
+        record
+        for record in caplog.records
+        if getattr(record, "event_name", None) == "acp_startup_failed"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Construction / argv
 # ---------------------------------------------------------------------------
@@ -73,6 +85,77 @@ def test_handles_tools_internally_and_streaming() -> None:
     ex = AcpExecutor(AcpAgentConfig(command="x"))
     assert ex.handles_tools_internally() is True
     assert ex.supports_streaming() is True
+
+
+def test_relative_acp_command_uses_spawn_cwd(tmp_path: Path) -> None:
+    """Relative command paths resolve from the configured child cwd."""
+    binary = tmp_path / "bin" / "jcode"
+    binary.parent.mkdir()
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o700)
+    executor = AcpExecutor(
+        AcpAgentConfig(command="./bin/jcode acp", name="Jcode"), cwd=str(tmp_path)
+    )
+
+    resolved = executor._resolve_configured_executable({"PATH": ""})
+
+    assert resolved == str(binary)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="tests host os.path semantics")
+def test_posix_backslash_command_name_uses_path(tmp_path: Path) -> None:
+    """Backslashes are valid POSIX filename characters, not path separators."""
+    binary = tmp_path / "bin" / r"C:\foo"
+    binary.parent.mkdir()
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o700)
+    executor = AcpExecutor(AcpAgentConfig(command=r"C:\\foo", name="Jcode"), cwd=str(tmp_path))
+
+    resolved = executor._resolve_configured_executable({"PATH": str(binary.parent)})
+
+    assert resolved == str(binary)
+
+
+@pytest.mark.asyncio
+async def test_inherited_cwd_enoent_is_deferred_to_startup(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deleted inherited cwd reaches the safe ExecutorError boundary."""
+    missing_cwd = FileNotFoundError(errno.ENOENT, "No such file or directory")
+    with patch.object(acp_executor_module.os, "getcwd", side_effect=missing_cwd):
+        executor = AcpExecutor(AcpAgentConfig(command="grok agent stdio", name="Grok Build"))
+    monkeypatch.setattr(executor, "_build_spawn_env", lambda: {"PATH": "/tmp"})
+
+    with caplog.at_level(logging.ERROR, logger="omnigent.inner.acp_executor"):
+        events = [
+            event async for event in executor.run_turn([{"role": "user", "content": "hi"}], [], "")
+        ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ExecutorError)
+    assert "working directory is unavailable" in events[0].message
+    assert "[Errno 2]" not in events[0].message
+    record = _startup_record(caplog)
+    assert record.attributes["cwd_exists"] is False
+    assert record.attributes["process_started"] is False
+    assert record.attributes["errno"] == errno.ENOENT
+    assert record.attributes["error_phase"] == "harness_startup"
+    assert record.attributes["error_impact"] == "blocking"
+    assert record.attributes["error_category"] == "user"
+
+
+def test_startup_log_does_not_call_stale_process_started() -> None:
+    """A dead cached process is not reported as a live startup process."""
+    executor = AcpExecutor(AcpAgentConfig(command="grok agent stdio"), cwd="/tmp")
+    executor._proc = Mock(returncode=1)
+
+    record = Mock()
+    with patch.object(acp_executor_module.logger, "error") as log_error:
+        executor._log_startup_failure(RuntimeError("startup failed"), phase="process_start")
+        record = log_error.call_args.kwargs["extra"]["attributes"]
+
+    assert record["process_started"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -2300,6 +2383,175 @@ async def test_startup_failure_quotes_the_agents_stderr(tmp_path: Path) -> None:
 
     assert errors, "a stalled handshake must surface an ExecutorError"
     assert "XAI_API_KEY not set" in errors[0].message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "agent_name"),
+    [("jcode acp", "Jcode"), ("grok agent stdio", "Grok Build")],
+)
+async def test_missing_acp_cli_is_path_safe_and_actionable(
+    tmp_path: Path,
+    command: str,
+    agent_name: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing Jcode/Grok-style CLI names only its basename in the error."""
+    executor = AcpExecutor(AcpAgentConfig(command=command, name=agent_name), cwd=str(tmp_path))
+    monkeypatch.setattr(executor, "_build_spawn_env", lambda: {"PATH": str(tmp_path)})
+
+    with caplog.at_level(logging.ERROR, logger="omnigent.inner.acp_executor"):
+        events = [
+            event async for event in executor.run_turn([{"role": "user", "content": "hi"}], [], "")
+        ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ExecutorError)
+    assert "not found" in events[0].message
+    safe_name = command.split()[0]
+    assert safe_name in events[0].message
+    assert str(tmp_path) not in events[0].message
+
+    record = _startup_record(caplog)
+    assert record.attributes["agent"] == agent_name
+    assert record.attributes["startup_phase"] == "process_start"
+    assert record.attributes["command"] == safe_name
+    assert record.attributes["cwd_exists"] is True
+    assert record.attributes["process_started"] is False
+    assert record.attributes["errno"] == errno.ENOENT
+    assert record.attributes["missing_filename"] == safe_name
+    assert record.attributes["error_phase"] == "harness_startup"
+    assert record.attributes["error_impact"] == "blocking"
+    assert record.attributes["error_category"] == "config"
+
+
+@pytest.mark.asyncio
+async def test_bare_spawn_enoent_is_enriched_without_exposing_cwd(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A filename-less subprocess ENOENT gets a safe command-specific detail."""
+    binary = tmp_path / "jcode"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o700)
+    executor = AcpExecutor(AcpAgentConfig(command="jcode acp", name="Jcode"), cwd=str(tmp_path))
+    monkeypatch.setattr(executor, "_build_spawn_env", lambda: {"PATH": str(tmp_path)})
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(side_effect=FileNotFoundError(errno.ENOENT, "No such file or directory")),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="omnigent.inner.acp_executor"):
+        events = [
+            event async for event in executor.run_turn([{"role": "user", "content": "hi"}], [], "")
+        ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ExecutorError)
+    assert "jcode" in events[0].message
+    assert "could not be started" in events[0].message
+    assert "[Errno 2]" not in events[0].message
+    assert str(tmp_path) not in events[0].message
+
+    record = _startup_record(caplog)
+    assert record.attributes["command"] == "jcode"
+    assert record.attributes["cwd_exists"] is True
+    assert record.attributes["process_started"] is False
+    assert record.attributes["errno"] == errno.ENOENT
+    assert record.attributes.get("missing_filename") is None
+    assert record.attributes["error_phase"] == "harness_startup"
+    assert record.attributes["error_impact"] == "blocking"
+    assert record.attributes["error_category"] == "config"
+
+
+@pytest.mark.asyncio
+async def test_deleted_acp_cwd_is_safe_and_structured(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deleted workspace fails before spawn without persisting its absolute path."""
+    workspace = tmp_path / "deleted-worktree"
+    workspace.mkdir()
+    executor = AcpExecutor(
+        AcpAgentConfig(command="grok agent stdio", name="Grok Build"), cwd=str(workspace)
+    )
+    workspace.rmdir()
+    monkeypatch.setattr(executor, "_build_spawn_env", lambda: {"PATH": str(tmp_path)})
+    spawn = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    with caplog.at_level(logging.ERROR, logger="omnigent.inner.acp_executor"):
+        events = [
+            event async for event in executor.run_turn([{"role": "user", "content": "hi"}], [], "")
+        ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ExecutorError)
+    assert "working directory is unavailable" in events[0].message
+    assert str(workspace) not in events[0].message
+    spawn.assert_not_awaited()
+
+    record = _startup_record(caplog)
+    assert record.attributes["command"] == "grok"
+    assert record.attributes["cwd_exists"] is False
+    assert record.attributes["process_started"] is False
+    assert record.attributes["errno"] == errno.ENOENT
+    assert record.attributes["missing_filename"] == workspace.name
+    assert record.attributes["error_phase"] == "harness_startup"
+    assert record.attributes["error_impact"] == "blocking"
+    assert record.attributes["error_category"] == "user"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["initialize", "session_new"])
+async def test_handshake_startup_failure_logs_phase_and_safe_filename(
+    tmp_path: Path,
+    phase: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initialize/session-new failures retain a phase and basename only."""
+    executor = AcpExecutor(
+        AcpAgentConfig(command="grok agent stdio", name="Grok Build"), cwd=str(tmp_path)
+    )
+    executor._proc = Mock(returncode=None)
+    missing = FileNotFoundError(errno.ENOENT, "No such file or directory", "/private/config.toml")
+    if phase == "initialize":
+        monkeypatch.setattr(executor, "_ensure_initialized", AsyncMock(side_effect=missing))
+    else:
+        monkeypatch.setattr(executor, "_ensure_initialized", AsyncMock())
+        monkeypatch.setattr(executor, "_ensure_session", AsyncMock(side_effect=missing))
+
+    with caplog.at_level(logging.ERROR, logger="omnigent.inner.acp_executor"):
+        events = [
+            event async for event in executor.run_turn([{"role": "user", "content": "hi"}], [], "")
+        ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ExecutorError)
+    assert "config.toml" in events[0].message
+    assert str(tmp_path) not in events[0].message
+    record = _startup_record(caplog)
+    assert record.attributes["startup_phase"] == phase
+    assert record.attributes["command"] == "grok"
+    assert record.attributes["cwd_exists"] is True
+    assert record.attributes["process_started"] is True
+    assert record.attributes["errno"] == errno.ENOENT
+    assert record.attributes["missing_filename"] == "config.toml"
+    assert record.attributes["error_phase"] == "harness_startup"
+    assert record.attributes["error_impact"] == "blocking"
+    assert record.attributes["error_category"] == "config"
+    assert record.attributes["exception_type"] == "FileNotFoundError"
+    from omnigent.debug_logging import record_to_row
+
+    row = record_to_row(record, source="harness")
+    assert "/private/config.toml" not in str(row["message"])
+    assert "/private/config.toml" not in str(row["attributes"])
+    assert row["stack_trace"] is None
 
 
 def test_stderr_ring_is_bounded_and_lines_are_capped() -> None:
