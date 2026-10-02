@@ -2101,6 +2101,62 @@ async def test_side_chat_message_after_runner_loss(
         assert CLOSED_LABEL_KEY not in after.labels
 
 
+@pytest.mark.parametrize(
+    ("parent_runner", "expected_status"),
+    [("runner_replacement", 409), ("runner_side", 409), ("runner_side", 503)],
+    ids=["parent-relaunched", "host-reports-runner-gone", "transient-outage"],
+)
+async def test_side_chat_retry_session_after_runner_loss(
+    client: httpx.AsyncClient,
+    db_uri: str,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    parent_runner: str,
+    expected_status: int,
+) -> None:
+    """Resume seals a side chat whose fork is provably gone; an outage stays resumable."""
+    child = await _create_native_child(client, name=f"retry-side-chat-{request.node.callspec.id}")
+    conv_store = SqlAlchemyConversationStore(db_uri)
+    conv_store.set_labels(
+        child["id"],
+        {
+            "omnigent.wrapper": "codex-native-ui-subagent",
+            "omnigent.codex_native.agent_nickname": "Side chat",
+        },
+    )
+    conv_store.replace_runner_id(child["id"], "runner_side")
+    conv_store.replace_runner_id(child["parent_session_id"], parent_runner)
+
+    async def _none(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(routes_events_module, "_get_runner_client", _none)
+    monkeypatch.setattr(routes_events_module, "_heal_subagent_runner_binding_via_parent", _none)
+
+    real_fork_lost = routes_events_module._codex_side_chat_fork_lost
+
+    async def _fork_lost(*args: Any, **kwargs: Any) -> bool:
+        # Stand in for the launching host's "dead" verdict; the helper has its own unit test.
+        if request.node.callspec.id == "host-reports-runner-gone":
+            return True
+        return await real_fork_lost(*args, **kwargs)
+
+    monkeypatch.setattr(routes_events_module, "_codex_side_chat_fork_lost", _fork_lost)
+
+    resp = await client.post(
+        f"/v1/sessions/{child['id']}/events",
+        json={"type": "retry_session", "data": {}},
+    )
+
+    assert resp.status_code == expected_status, resp.text
+    after = conv_store.get_conversation(child["id"])
+    assert after is not None
+    if expected_status == 409:
+        assert after.labels.get(CLOSED_LABEL_KEY) == CLOSED_LABEL_VALUE
+    else:
+        assert CLOSED_LABEL_KEY not in after.labels
+
+
 async def test_non_subagent_session_not_healed_via_parent(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,

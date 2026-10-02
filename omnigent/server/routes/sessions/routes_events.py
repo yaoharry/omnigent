@@ -424,6 +424,36 @@ async def _raise_if_runner_on_another_replica(
         )
 
 
+async def _raise_if_side_chat_fork_lost(
+    conv: Conversation,
+    app_state: Any,
+    conversation_store: ConversationStore,
+    runner_router: RunnerRouter | None,
+) -> None:
+    """
+    Seal a side chat read-only once its ephemeral fork is provably gone.
+
+    :param conv: Session row about to receive a turn or a recovery request.
+    :param app_state: ``request.app.state`` — supplies the host registry.
+    :param conversation_store: Store used to compare runners and persist the label.
+    :param runner_router: Router used to check whether the fork's runner is online.
+    :raises OmnigentError: ``CONFLICT`` when the side chat's fork died with its runner.
+    """
+    host_registry = getattr(app_state, "host_registry", None)
+    if not await _codex_side_chat_fork_lost(
+        conv, conversation_store, runner_router, host_registry
+    ):
+        return
+    # The ephemeral fork died with its runner; keep the transcript read-only.
+    await asyncio.to_thread(
+        conversation_store.set_labels, conv.id, {CLOSED_LABEL_KEY: CLOSED_LABEL_VALUE}
+    )
+    raise OmnigentError(
+        "This side chat ended when its runner restarted and can't be continued.",
+        code=ErrorCode.CONFLICT,
+    )
+
+
 async def _raise_if_runner_re_tunnelled_to_another_replica(
     session_id: str,
     runner_id: str | None,
@@ -480,6 +510,7 @@ async def _recover_retry_session(
     conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
     if conv is None:
         raise _session_not_found()
+    await _raise_if_side_chat_fork_lost(conv, request.app.state, conversation_store, runner_router)
 
     original_runner_id = conv.runner_id
     runner_client = await _get_runner_client(session_id, runner_router)
@@ -1021,23 +1052,9 @@ def register_events_routes(
                 "Session is closed. Start a new sub-agent session to continue.",
                 code=ErrorCode.CONFLICT,
             )
-        if (
-            body.type == "message"
-            and body.data.get("role") == "user"
-            and await _codex_side_chat_fork_lost(
-                conv,
-                conversation_store,
-                runner_router,
-                getattr(request.app.state, "host_registry", None),
-            )
-        ):
-            # The ephemeral fork died with its runner; keep the transcript read-only.
-            await asyncio.to_thread(
-                conversation_store.set_labels, conv.id, {CLOSED_LABEL_KEY: CLOSED_LABEL_VALUE}
-            )
-            raise OmnigentError(
-                "This side chat ended when its runner restarted and can't be continued.",
-                code=ErrorCode.CONFLICT,
+        if body.type == "message" and body.data.get("role") == "user":
+            await _raise_if_side_chat_fork_lost(
+                conv, request.app.state, conversation_store, runner_router
             )
         if (
             body.type == "message"
