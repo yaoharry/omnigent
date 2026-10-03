@@ -4069,6 +4069,24 @@ describe("NewChatLandingScreen", () => {
         expect(calls.length).toBeGreaterThan(0);
         expect(calls.every(([id, , enabled]) => id === "host_1" && !enabled)).toBe(true);
       }
+      if (state === "offline") {
+        const picker = screen.getByTestId("new-chat-landing-agent-select");
+        expect(picker).toHaveAccessibleName("Claude Code, Model Default");
+        expect(picker).not.toHaveTextContent("Models unavailable");
+
+        mockHosts([{ ...host("offline"), configured_harnesses: readyCatalogs }], {
+          ...SUCCESS_QUERY_STATE,
+          status: "error",
+          isError: true,
+          isSuccess: false,
+          error: new Error("hosts failed"),
+        });
+        fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
+          target: { value: "Host refresh failed" },
+        });
+        expect(picker).toHaveAccessibleName("Claude Code, Model Default");
+        expect(picker).not.toHaveTextContent("Models unavailable");
+      }
 
       mockHosts([{ ...host("online"), configured_harnesses: readyCatalogs }]);
       fireEvent.change(screen.getByTestId("new-chat-landing-input"), {
@@ -4606,13 +4624,14 @@ describe("NewChatLandingScreen", () => {
     expect(repositoryTrigger).toHaveAccessibleName("Sandbox repositories: omnigent");
   });
 
-  it("names Claude and Codex model and effort details in the harness trigger", () => {
+  it("shows Default when the settled catalog has models without an explicit default", () => {
     renderLanding();
 
     const picker = screen.getByTestId("new-chat-landing-agent-select");
     expect(within(picker).getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent(
-      "Models unavailable",
+      "Default",
     );
+    expect(picker).not.toHaveTextContent("Models unavailable");
     expect(picker).toHaveAccessibleName("Claude Code, Model Default");
 
     selectAgent("a2");
@@ -4622,7 +4641,7 @@ describe("NewChatLandingScreen", () => {
     );
   });
 
-  it("keeps the Codex model visible when its default model is unresolved", () => {
+  it("shows Models unavailable when the settled catalog is empty", () => {
     useHostModelOptionsMock.mockReturnValue({
       data: [],
       isLoading: false,
@@ -4632,7 +4651,7 @@ describe("NewChatLandingScreen", () => {
     selectAgent("a2");
 
     const picker = screen.getByTestId("new-chat-landing-agent-select");
-    expect(picker).toHaveAccessibleName("Codex, Model Default");
+    expect(picker).toHaveAccessibleName("Codex, Model unavailable");
     expect(within(picker).getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent(
       "Models unavailable",
     );
@@ -8289,9 +8308,7 @@ describe("NewChatLandingScreen agent picker + Edit settings", () => {
   it("summarizes the current settings across the integrated controls", () => {
     renderLanding();
     pickPermissionOption("plan");
-    expect(screen.getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent(
-      "Models unavailable",
-    );
+    expect(screen.getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent("Default");
     expect(screen.getByTestId("new-chat-landing-permission-chip")).toHaveTextContent("Plan");
   });
 
@@ -10252,7 +10269,7 @@ describe("managed sandbox inference models", () => {
     });
   }
 
-  it.each(["lakebox", "kubernetes", "agent_sandbox", "modal"])(
+  it.each(["lakebox", "kubernetes", "agent_sandbox", "modal", "arclet"])(
     "keeps %s without bindings independent of the preview service",
     async (provider) => {
       preview(catalog, new Error("Gateway unavailable"));
@@ -10274,6 +10291,11 @@ describe("managed sandbox inference models", () => {
       );
       expect(screen.queryByTestId("sandbox-model-provider")).toBeNull();
       expect(screen.queryByRole("alert")).toBeNull();
+      const picker = screen.getByTestId("new-chat-landing-agent-select");
+      expect(within(picker).getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent(
+        "Default",
+      );
+      expect(picker).not.toHaveTextContent("Models unavailable");
       const { body } = await submitAndReadBody();
       expect(body.host_type).toBe("managed");
       expect(body.inference_configuration_revision).toBeUndefined();
@@ -10348,6 +10370,20 @@ describe("managed sandbox inference models", () => {
       null,
       true,
     );
+  });
+
+  it("shows Default for a nonempty managed sandbox catalog without a default marker", () => {
+    preview({
+      ...catalog,
+      models: [{ id: "claude-opus", displayName: "Claude Opus" }],
+    });
+    renderConfiguredSandbox({ managed_sandboxes_enabled: true, sandbox_provider: "agent_sandbox" });
+
+    const picker = screen.getByTestId("new-chat-landing-agent-select");
+    expect(within(picker).getByTestId("new-chat-landing-agent-model-value")).toHaveTextContent(
+      "Default",
+    );
+    expect(picker).not.toHaveTextContent("Models unavailable");
   });
 
   it("supports an ACP agent without native model-picker capabilities", async () => {

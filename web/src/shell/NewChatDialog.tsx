@@ -1383,6 +1383,8 @@ export function AgentHarnessPicker({
   triggerTooltip,
   triggerTooltipRows,
   triggerDetails = EMPTY_HARNESS_TRIGGER_DETAILS,
+  modelOptionsUnavailable,
+  previewCacheInvalid,
   triggerIcon,
   selectedConfigContent,
   isEntryConfigurable,
@@ -1443,6 +1445,10 @@ export function AgentHarnessPicker({
   triggerTooltipRows?: readonly { label: string; value: string }[];
   /** Model / effort values joined inside the harness trigger. */
   triggerDetails?: readonly { label: string; value: string }[];
+  /** Whether the settled effective model catalog is empty. */
+  modelOptionsUnavailable?: boolean;
+  /** Whether failed live metadata must clear rather than refresh the cached trigger preview. */
+  previewCacheInvalid?: boolean;
   /** Harness glyph rendered before the joined model / effort label. */
   triggerIcon?: ReactNode;
   /** Integrated configuration menu for the currently selected entry. */
@@ -1493,15 +1499,20 @@ export function AgentHarnessPicker({
     : null;
   const triggerModelText = triggerModel ? compactModelTriggerLabel(triggerModel.value) : "";
   const triggerEffortText = triggerEffort ? compactModelTriggerLabel(triggerEffort.value) : "";
+  const modelsUnavailable = modelOptionsUnavailable === true;
   const visibleModelText = selectedUnavailable
     ? ""
-    : triggerModelText === "Default"
+    : modelsUnavailable
       ? "Models unavailable"
       : triggerModelText;
   const visibleEffortText =
     triggerEffortText === "Default" || triggerEffortText === "—" ? "" : triggerEffortText;
   const triggerAccessibleDetails = triggerDetails
-    .map((detail) => `${detail.label} ${compactModelTriggerLabel(detail.value)}`)
+    .map((detail) =>
+      detail.label === "Model" && modelsUnavailable
+        ? "Model unavailable"
+        : `${detail.label} ${compactModelTriggerLabel(detail.value)}`,
+    )
     .join(", ");
   const triggerAccessibleName = [
     hasAgents ? agentLabel : "No agents",
@@ -1521,7 +1532,7 @@ export function AgentHarnessPicker({
   const visibleCachedPreview = selectedUnavailable ? null : cachedPreview;
   const resolvedPreview = useMemo<NewChatPickerPreview | null>(
     () =>
-      selectedEntry && hasAgents && visibleModelText !== "Models unavailable"
+      selectedEntry && hasAgents && !modelsUnavailable && !previewCacheInvalid
         ? {
             agent: { name: selectedEntry.name, harness: selectedEntry.harness },
             label: triggerAccessibleName,
@@ -1533,7 +1544,8 @@ export function AgentHarnessPicker({
     [
       selectedEntry,
       hasAgents,
-      visibleModelText,
+      modelsUnavailable,
+      previewCacheInvalid,
       triggerAccessibleName,
       triggerText,
       triggerSecondaryText,
@@ -3497,6 +3509,18 @@ export function NewChatLandingScreen() {
     setPickerReadyTarget(pickerDataLoading ? null : pickerTarget);
   }, [pickerDataLoading, pickerTarget]);
   const pickerLoading = pickerDataLoading || pickerReadyTarget !== pickerTarget;
+  const pickerModelCatalogEnabled =
+    sandboxInferenceConfigured ||
+    (!sandboxSelected &&
+      selectedNativeHarness !== null &&
+      canLoadHostModels(selectedNativeHarness));
+  const pickerModelLookupFailed = Boolean(pickerModelsError);
+  const pickerModelOptionsUnavailable =
+    !pickerLoading &&
+    !routingOn &&
+    !autoRoutingSelected &&
+    pickerModelOptions.length === 0 &&
+    (pickerModelLookupFailed || pickerModelCatalogEnabled);
   const [interactiveCacheKey, setInteractiveCacheKey] = useState<string | null>(null);
   useEffect(() => {
     setInteractiveCacheKey(cachedPickerOptions ? pickerCacheKey : null);
@@ -6731,6 +6755,15 @@ export function NewChatLandingScreen() {
                             : undefined
                         }
                         triggerDetails={harnessTriggerDetails}
+                        modelOptionsUnavailable={
+                          agentList.length > 0 &&
+                          harnessTriggerDetails.some((detail) => detail.label === "Model")
+                            ? pickerModelOptionsUnavailable
+                            : undefined
+                        }
+                        previewCacheInvalid={Boolean(
+                          agentsError || hostsError || pickerModelsError,
+                        )}
                         triggerIcon={
                           selectedAgent ? (
                             <span
