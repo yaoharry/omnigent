@@ -723,6 +723,9 @@ async def test_relay_publishes_failed_status_on_tunnel_close(
 class _RecordingLabelStore:
     """Minimal store for disconnect labels, live status, and runner liveness.
 
+    :param live_status: Persisted live status, read by the mid-turn check
+        when the in-memory status cache is cold.
+    :param kind: Persisted conversation kind, ``"default"`` or ``"sub_agent"``.
     :param runner_liveness: Canned runner bindings and heartbeats used to
         simulate a runner live on another replica.
     """
@@ -731,10 +734,12 @@ class _RecordingLabelStore:
         self,
         *,
         live_status: str = "idle",
+        kind: str = "default",
         runner_liveness: dict[str, tuple[str | None, int | None]] | None = None,
     ) -> None:
         self.labels: dict[str, dict[str, str]] = {}
         self.live_status = live_status
+        self.kind = kind
         self._runner_liveness = runner_liveness or {}
 
     def set_labels(self, conversation_id: str, updates: dict[str, str]) -> None:
@@ -743,11 +748,13 @@ class _RecordingLabelStore:
     def get_runner_liveness(self, conversation_id: str) -> tuple[str | None, int | None] | None:
         return self._runner_liveness.get(conversation_id)
 
+    def get_session_live_state(self, conversation_id: str) -> tuple[str, str | None] | None:
+        return self.kind, self.live_status
+
     def get_conversation(self, conversation_id: str) -> Any:
         """Return a conversation-shaped object exposing the read fields.
 
-        ``.labels`` is read by the recovery guard, ``.live_status`` by the
-        mid-turn check when the in-memory status cache is cold.
+        ``.labels`` is read by the recovery guard.
         """
         return SimpleNamespace(
             labels=dict(self.labels.get(conversation_id, {})),
@@ -1598,7 +1605,7 @@ async def test_relay_reports_the_drop_when_the_live_status_read_fails(
     store = _RecordingLabelStore()
     monkeypatch.setattr(
         store,
-        "get_conversation",
+        "get_session_live_state",
         lambda conversation_id: (_ for _ in ()).throw(RuntimeError("db blip")),
     )
     session_id = "abcdef0123456789abcdef0123456789"
@@ -1619,6 +1626,158 @@ async def test_relay_reports_the_drop_when_the_live_status_read_fails(
 
         # The relay survived the store error and still reported the cause.
         assert handle.task.exception() is None
+        assert sessions_module._session_status_cache.get(session_id) == "failed"
+        persisted = sessions_module._last_task_error_from_labels(store.labels[session_id])
+        assert persisted is not None
+        assert persisted["code"] == "runner_disconnected"
+    finally:
+        gate.set()
+        handle = sessions_module._runner_relay_tasks.get(session_id)
+        if handle is not None and not handle.task.done():
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(handle.task, timeout=_TASK_TIMEOUT_S)
+        sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
+        session_stream.close(session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "live_status", "conversation_backend_down"),
+    [
+        # The decision reads only session metadata, so an outage of the
+        # conversation backend no longer reads as an indeterminate row.
+        ("default", "idle", True),
+        # A sub-agent this replica never saw run is not failed from a row that
+        # still reads mid-turn: one host going away reaches every child the
+        # parent ever spawned, almost all of them long finished.
+        ("sub_agent", "running", False),
+        ("sub_agent", "waiting", True),
+    ],
+)
+async def test_relay_cold_cache_stays_quiet_without_evidence_of_a_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    kind: str,
+    live_status: str,
+    conversation_backend_down: bool,
+) -> None:
+    """
+    A cold cache fails a session only when its metadata shows a top-level turn.
+
+    The replica holding a relay often never saw the session's turn edges: a
+    runner that reconnected here re-established a relay for every session bound
+    to it. When that runner later drops, the relay must not turn an idle
+    session into a ``runner_disconnected`` failure — not because conversation
+    hydration is unavailable, and not because a sub-agent's row is stale.
+    """
+    from omnigent.runtime import session_stream
+    from omnigent.server.routes import sessions as sessions_module
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.RUNNER_DISCONNECT_GRACE_S",
+        0.0,
+    )
+    sessions_module._runner_relay_tasks.clear()
+    gate = asyncio.Event()
+    fake_runner = _ScriptedThenDropRunnerClient([], gate)
+    store = _RecordingLabelStore(live_status=live_status, kind=kind)
+    if conversation_backend_down:
+        monkeypatch.setattr(
+            store,
+            "get_conversation",
+            lambda conversation_id: (_ for _ in ()).throw(RuntimeError("UNAVAILABLE")),
+        )
+    session_id = "5a4b3c2d1e0f49382716253445362718"
+
+    try:
+        assert sessions_module._session_status_cache.get(session_id) is None
+
+        handle = await sessions_module._ensure_runner_relay_ready(
+            session_id,
+            "runner_cold_cache_quiet",
+            fake_runner,  # type: ignore[arg-type]
+            conversation_store=store,  # type: ignore[arg-type]
+        )
+        assert handle is not None
+
+        gate.set()
+        await asyncio.wait_for(handle.task, timeout=_TASK_TIMEOUT_S)
+
+        assert handle.task.exception() is None
+        assert sessions_module._session_status_cache.get(session_id) is None
+        assert session_id not in store.labels
+        record = next(
+            r
+            for r in caplog.records
+            if getattr(r, "event_name", None) == "runner_stream_disconnected"
+        )
+        assert record.attributes["decision"] == "idle_no_failure"
+        # The deferred sub-agent stays auditable: its row claimed a turn.
+        unobserved = [
+            r
+            for r in caplog.records
+            if getattr(r, "event_name", None) == "runner_drop_subagent_unobserved"
+        ]
+        if kind == "sub_agent":
+            assert [r.attributes["row_live_status"] for r in unobserved] == [live_status]
+            assert unobserved[0].attributes["origin"] == "relay"
+        else:
+            assert unobserved == []
+    finally:
+        gate.set()
+        handle = sessions_module._runner_relay_tasks.get(session_id)
+        if handle is not None and not handle.task.done():
+            handle.task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                await asyncio.wait_for(handle.task, timeout=_TASK_TIMEOUT_S)
+        sessions_module._runner_relay_tasks.clear()
+        sessions_module._session_status_cache.pop(session_id, None)
+        session_stream.close(session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence", ["warm_subagent_cache", "missing_metadata_row"])
+async def test_relay_still_fails_a_sub_agent_with_evidence_or_an_unknown_row(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence: str,
+) -> None:
+    """
+    The sub-agent rule only replaces the row fallback, never real evidence.
+
+    A sub-agent this replica saw go ``running`` is failed exactly as before, and
+    a session with no metadata row at all stays indeterminate and reports the drop.
+    """
+    from omnigent.runtime import session_stream
+    from omnigent.server.routes import sessions as sessions_module
+
+    monkeypatch.setattr(
+        "omnigent.server.routes._sessions.orchestration.RUNNER_DISCONNECT_GRACE_S",
+        0.0,
+    )
+    sessions_module._runner_relay_tasks.clear()
+    gate = asyncio.Event()
+    fake_runner = _ScriptedThenDropRunnerClient([], gate)
+    store = _RecordingLabelStore(live_status="idle", kind="sub_agent")
+    session_id = "7c6b5a49382716253445362718a9b0c1"
+    if evidence == "warm_subagent_cache":
+        sessions_module._session_status_cache[session_id] = "running"
+    else:
+        monkeypatch.setattr(store, "get_session_live_state", lambda conversation_id: None)
+
+    try:
+        handle = await sessions_module._ensure_runner_relay_ready(
+            session_id,
+            "runner_subagent_evidence",
+            fake_runner,  # type: ignore[arg-type]
+            conversation_store=store,  # type: ignore[arg-type]
+        )
+        assert handle is not None
+
+        gate.set()
+        await asyncio.wait_for(handle.task, timeout=_TASK_TIMEOUT_S)
+
         assert sessions_module._session_status_cache.get(session_id) == "failed"
         persisted = sessions_module._last_task_error_from_labels(store.labels[session_id])
         assert persisted is not None
@@ -1763,6 +1922,10 @@ def _bound_conv(
         ("default", None, "running", False, False, True),
         ("default", None, "idle", False, False, False),
         ("default", None, None, False, False, False),
+        # A sub-agent needs a cached edge: its row can still read mid-turn long
+        # after it finished, under either flag.
+        ("sub_agent", None, "running", False, False, False),
+        ("sub_agent", None, "waiting", False, True, False),
         # Stop / archive drop the tunnel on purpose; the relay owns that path.
         ("default", "running", None, True, False, False),
         # A crash report also covers the runner that died before it could run
@@ -1784,6 +1947,7 @@ async def test_mark_runner_sessions_offline_only_fails_interrupted_turns(
     intentional_stop: bool,
     fail_idle_top_level: bool,
     expect_failed: bool,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """
     Only the sessions a departed runner interrupted are failed, with cause.
@@ -1830,6 +1994,17 @@ async def test_mark_runner_sessions_offline_only_fails_interrupted_turns(
         else:
             assert status == cached
             assert persisted is None
+        unobserved = [
+            r.attributes
+            for r in caplog.records
+            if getattr(r, "event_name", None) == "runner_drop_subagent_unobserved"
+        ]
+        if kind == "sub_agent" and cached is None and live_status in ("running", "waiting"):
+            assert len(unobserved) == 1
+            assert unobserved[0]["row_live_status"] == live_status
+            assert unobserved[0]["origin"] == "sweep"
+        else:
+            assert unobserved == []
     finally:
         sessions_module._intentional_stop_sessions.discard(session_id)
         sessions_module._session_status_cache.pop(session_id, None)

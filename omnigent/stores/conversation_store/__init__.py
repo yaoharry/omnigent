@@ -552,6 +552,21 @@ class ConversationStore(ABC):
         ...
 
     @abstractmethod
+    def get_session_live_state(self, conversation_id: str) -> tuple[str, str | None] | None:
+        """Return the session kind and persisted live status from the metadata database.
+
+        Reads neither conversation data nor labels, so an unrelated
+        conversation backend outage cannot decide whether a runner drop
+        interrupted a turn.
+
+        :param conversation_id: Session/conversation ID to look up.
+        :returns: ``(kind, live_status)``, e.g. ``("sub_agent", "idle")``, or
+            ``None`` if the metadata row is missing. ``live_status`` may be
+            ``None``.
+        """
+        ...
+
+    @abstractmethod
     def get_session_connectivity(
         self, conversation_ids: list[str]
     ) -> dict[str, SessionConnectivity]:

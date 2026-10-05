@@ -487,6 +487,38 @@ def test_get_runner_liveness_reads_only_metadata(
         event.remove(store._conv_engine, "before_cursor_execute", unavailable)
 
 
+@pytest.mark.parametrize("live_status", ["running", "idle", None])
+def test_get_session_live_state_reads_only_metadata(
+    store: SqlAlchemyConversationStore, live_status: str | None
+) -> None:
+    """Kind and live status survive an AP database outage and stay workspace-scoped."""
+    from sqlalchemy import event
+
+    from omnigent.db.db_models import workspace_scope
+
+    parent = store.create_conversation(title="parent")
+    child = store.create_conversation(
+        kind="sub_agent", title="child", parent_conversation_id=parent.id
+    )
+    if live_status is not None:
+        store.set_session_live_status(child.id, live_status)
+
+    def unavailable(*_args: Any) -> None:
+        raise ConnectionError("conversation database unavailable")
+
+    event.listen(store._conv_engine, "before_cursor_execute", unavailable)
+    try:
+        with pytest.raises(ConnectionError, match="conversation database unavailable"):
+            store.get_conversation(child.id)
+        assert store.get_session_live_state(child.id) == ("sub_agent", live_status)
+        assert store.get_session_live_state(parent.id) == ("default", None)
+        assert store.get_session_live_state("0" * 32) is None
+        with workspace_scope(42):
+            assert store.get_session_live_state(child.id) is None
+    finally:
+        event.remove(store._conv_engine, "before_cursor_execute", unavailable)
+
+
 def test_list_conversations_by_runner_id(store: SqlAlchemyConversationStore) -> None:
     a = store.create_conversation(title="a", runner_id="runner_x")
     store.create_conversation(title="b", runner_id="runner_y")

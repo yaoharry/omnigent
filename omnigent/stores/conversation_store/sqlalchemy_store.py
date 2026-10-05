@@ -51,6 +51,7 @@ from omnigent.db.db_models import (
     uuid_to_bytes,
 )
 from omnigent.db.enum_codecs import (
+    decode_conversation_kind,
     decode_item_status,
     decode_item_type,
     decode_session_live_status,
@@ -1286,6 +1287,25 @@ class SqlAlchemyConversationStore(ConversationStore):
                 )
             ).one_or_none()
         return (row.runner_id, row.runner_last_seen) if row is not None else None
+
+    def get_session_live_state(self, conversation_id: str) -> tuple[str, str | None] | None:
+        """Read one session's kind and live status from the metadata DB only."""
+        with self._session("get_session_live_state") as session:
+            row = session.execute(
+                select(
+                    SqlConversationMetadata.kind,
+                    SqlConversationMetadata.live_status,
+                ).where(
+                    SqlConversationMetadata.workspace_id == current_workspace_id(),
+                    SqlConversationMetadata.id == conversation_id,
+                )
+            ).one_or_none()
+        if row is None:
+            return None
+        live_status = (
+            decode_session_live_status(row.live_status) if row.live_status is not None else None
+        )
+        return decode_conversation_kind(row.kind), live_status
 
     def get_session_connectivity(
         self, conversation_ids: list[str]

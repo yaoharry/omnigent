@@ -3521,7 +3521,8 @@ async def _mark_runner_sessions_offline_impl(
     completed successfully. The runner's absence is already carried by
     liveness (``clear_runner_liveness``), which is what drives the
     reconnect affordances, so a session that was not mid-turn needs no
-    status edge at all.
+    status edge at all. A sub-agent counts as mid-turn only on this
+    replica's cached edge (see :func:`_subagent_drop_needs_observed_turn`).
 
     The sessions that DO get failed carry the cause, persisted as durable
     labels. The cause is what lets the client render a benign
@@ -3549,10 +3550,13 @@ async def _mark_runner_sessions_offline_impl(
         # consumes the marker — so peek without discarding here.
         if conv.id in _intentional_stop_sessions:
             continue
-        # Cache first (this replica holds the runner's tunnel, so it saw the
-        # turn edges), falling back to the row for a session whose live state
-        # was published before a restart.
-        live = _session_status_cache.get(conv.id, conv.live_status)
+        # Cache first, falling back to the row for a session whose live state
+        # was published before a restart; a sub-agent needs the cached edge.
+        cached = _session_status_cache.get(conv.id)
+        if cached is None and _subagent_drop_needs_observed_turn(conv.kind):
+            _log_unobserved_subagent_drop(conv.id, conv.live_status, origin="sweep")
+            continue
+        live = cached if cached is not None else conv.live_status
         interrupted = live in _MID_TURN_STATUSES
         dead_on_arrival = fail_idle_top_level and conv.kind != "sub_agent"
         if not interrupted and not dead_on_arrival:
@@ -7184,6 +7188,53 @@ _NATIVE_TERMINAL_ENSURE_RECONNECT_GRACE_S: float = 30.0
 _MID_TURN_STATUSES = ("running", "waiting")
 
 
+def _subagent_drop_needs_observed_turn(kind: str) -> bool:
+    """
+    Return whether runner loss may fail this session only on a cached turn.
+
+    A sub-agent rides its parent's runner, so one host going away reaches
+    every child the parent ever spawned, most of them long finished. A
+    replica with no cached edge for a child never saw it run, and the
+    persisted ``live_status`` is not a safe stand-in: a child that went
+    ``running`` then ``idle`` hours ago can still read mid-turn there, which
+    failed whole Agents rails on every host shutdown. A child that really
+    was mid-turn keeps that row, so
+    :func:`omnigent.server.child_session_recovery.restore_active_children`
+    resumes it when the runner reconnects.
+
+    :param kind: Conversation kind, e.g. ``"sub_agent"`` or ``"default"``.
+    :returns: ``True`` for a sub-agent.
+    """
+    return kind == "sub_agent"
+
+
+def _log_unobserved_subagent_drop(
+    session_id: str, live_status: str | None, *, origin: str
+) -> None:
+    """
+    Record a sub-agent left unfailed although its row still reads mid-turn.
+
+    Without this row, a child the departing runner really interrupted would be
+    indistinguishable from an idle one in telemetry.
+
+    :param session_id: The sub-agent's session id, e.g. ``"conv_child123"``.
+    :param live_status: The persisted live status, e.g. ``"running"``.
+    :param origin: Which runner-loss path decided, ``"relay"`` or ``"sweep"``.
+    """
+    if live_status not in _MID_TURN_STATUSES:
+        return
+    _logger.info(
+        "Runner loss: not failing sub-agent session=%s that this replica never saw mid-turn",
+        session_id,
+        extra=debug_event(
+            "runner_drop_subagent_unobserved",
+            session_id=session_id,
+            row_live_status=live_status,
+            origin=origin,
+        ),
+    )
+
+
 class _RelayTransportLost(Exception):
     """Runner stream transport dropped mid-relay.
 
@@ -7243,10 +7294,17 @@ async def _runner_drop_interrupted_turn(
     """
     Report whether a departing runner caught this session mid-turn.
 
-    Prefers the relay-fed cache — the replica holding the runner's tunnel
-    saw the turn edges — and falls back to the row for a session whose live
+    Prefers the relay-fed cache, which holds the turn edges this replica
+    published, and falls back to the metadata row for a session whose live
     state was published before a restart, so a deploy mid-turn does not
-    downgrade a real interruption to a benign one.
+    downgrade a real interruption to a benign one. The row is read from the
+    metadata database alone, so a conversation backend outage cannot turn
+    every idle session on a dropped runner into a failure.
+
+    A sub-agent never falls back to the row (see
+    :func:`_subagent_drop_needs_observed_turn`): with a cold cache it is
+    reported as not interrupted, and a row that still reads mid-turn is
+    logged as ``runner_drop_subagent_unobserved``.
 
     An unreadable or missing row leaves the question open, and this runs
     inside the disconnect handler: answering "not mid-turn" there would
@@ -7265,7 +7323,7 @@ async def _runner_drop_interrupted_turn(
     if cached is not None:
         return cached in _MID_TURN_STATUSES
     try:
-        conv = await asyncio.to_thread(conversation_store.get_conversation, session_id)
+        state = await asyncio.to_thread(conversation_store.get_session_live_state, session_id)
     except Exception:  # noqa: BLE001 — an unreadable row must not kill the relay
         _logger.warning(
             "Relay: live-status read failed for session=%s; reporting the drop",
@@ -7274,9 +7332,13 @@ async def _runner_drop_interrupted_turn(
             extra={"session_id": session_id},
         )
         return True
-    if conv is None:
+    if state is None:
         return True
-    return conv.live_status in _MID_TURN_STATUSES
+    kind, live_status = state
+    if _subagent_drop_needs_observed_turn(kind):
+        _log_unobserved_subagent_drop(session_id, live_status, origin="relay")
+        return False
+    return live_status in _MID_TURN_STATUSES
 
 
 async def _relay_runner_live_elsewhere(
