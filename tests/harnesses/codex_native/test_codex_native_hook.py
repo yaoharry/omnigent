@@ -1174,6 +1174,104 @@ def test_apply_thread_model_pages_the_catalog(
     )
 
 
+def _ladder(*efforts: str) -> list[dict[str, str]]:
+    """
+    Build a ``supportedReasoningEfforts`` value as the app-server reports it.
+
+    :param efforts: Effort names the model offers, e.g. ``"low"``.
+    :returns: One option per effort.
+    """
+    return [{"reasoningEffort": effort, "description": effort} for effort in efforts]
+
+
+def test_apply_thread_model_moves_an_effort_the_routed_model_lacks(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The thread keeps its effort across a switch, so a carried-over rung the new
+    model does not offer fails every turn on the gateway.
+
+    The switch names the nearest rung in the same ``thread/settings/update``
+    and mirrors it into config.toml, so the two never disagree.
+    """
+    from omnigent.harnesses.codex_native.bridge import (
+        read_codex_config_effort,
+        write_codex_config_effort,
+    )
+
+    codex_home_for_bridge_dir(bridge_dir).mkdir(parents=True, exist_ok=True)
+    assert write_codex_config_effort(bridge_dir, "max")
+    catalog = [
+        {"id": "gpt-5.6-sol", "supportedReasoningEfforts": _ladder("low", "high", "max")},
+        {
+            "id": "gpt-5.6-luna",
+            "supportedReasoningEfforts": _ladder("none", "low", "medium", "high", "xhigh"),
+        },
+    ]
+    client = _install_fake_client(monkeypatch, _FakeAppServerClient(catalog))
+
+    assert codex_native_hook._apply_thread_model(bridge_dir, "databricks-gpt-5-6-luna") is None
+
+    assert client.requests[-1] == (
+        "thread/settings/update",
+        {"threadId": "thread_abc", "model": "gpt-5.6-luna", "effort": "xhigh"},
+    )
+    assert read_codex_config_effort(bridge_dir) == "xhigh"
+
+
+def test_apply_thread_model_keeps_an_effort_the_routed_model_offers(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rung already on the new model's ladder is the user's pick, so it stays."""
+    from omnigent.harnesses.codex_native.bridge import (
+        read_codex_config_effort,
+        write_codex_config_effort,
+    )
+
+    codex_home_for_bridge_dir(bridge_dir).mkdir(parents=True, exist_ok=True)
+    assert write_codex_config_effort(bridge_dir, "high")
+    catalog = [{"id": "gpt-5.6-luna", "supportedReasoningEfforts": _ladder("low", "high")}]
+    client = _install_fake_client(monkeypatch, _FakeAppServerClient(catalog))
+
+    assert codex_native_hook._apply_thread_model(bridge_dir, "databricks-gpt-5-6-luna") is None
+
+    assert client.requests[-1] == (
+        "thread/settings/update",
+        {"threadId": "thread_abc", "model": "gpt-5.6-luna"},
+    )
+    assert read_codex_config_effort(bridge_dir) == "high"
+
+
+@pytest.mark.parametrize("declared", [None, []])
+def test_apply_thread_model_leaves_effort_alone_when_the_row_declares_no_ladder(
+    bridge_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    declared: list[dict[str, str]] | None,
+) -> None:
+    """An older app-server reports no ladder; that is no evidence to clamp on."""
+    from omnigent.harnesses.codex_native.bridge import (
+        read_codex_config_effort,
+        write_codex_config_effort,
+    )
+
+    codex_home_for_bridge_dir(bridge_dir).mkdir(parents=True, exist_ok=True)
+    assert write_codex_config_effort(bridge_dir, "max")
+    row: dict[str, object] = {"id": "gpt-5.6-luna"}
+    if declared is not None:
+        row["supportedReasoningEfforts"] = declared
+    client = _install_fake_client(monkeypatch, _FakeAppServerClient([row]))
+
+    assert codex_native_hook._apply_thread_model(bridge_dir, "databricks-gpt-5-6-luna") is None
+
+    assert client.requests[-1] == (
+        "thread/settings/update",
+        {"threadId": "thread_abc", "model": "gpt-5.6-luna"},
+    )
+    assert read_codex_config_effort(bridge_dir) == "max"
+
+
 def test_route_turn_ignores_a_marker_another_session_left_in_the_dir(
     bridge_dir: Path,
     monkeypatch: pytest.MonkeyPatch,

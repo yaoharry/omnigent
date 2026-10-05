@@ -155,6 +155,37 @@ def clamp_spawn_effort(effort: str | None, model: str | None) -> str | None:
     return EXTENDED_MODEL_DEFAULT_EFFORT.get(bare, effort)
 
 
+def codex_reachable_model_row(
+    model: str,
+    options: Iterable[Mapping[str, Any]],  # type: ignore[explicit-any]  # raw model/list rows
+) -> Mapping[str, Any] | None:  # type: ignore[explicit-any]  # raw model/list row
+    """Find the ``model/list`` row that serves a routed model id.
+
+    :param model: Model id from a routing decision, e.g.
+        ``"databricks-gpt-5-6-luna"``.
+    :param options: Raw ``model/list`` rows, e.g.
+        ``[{"id": "gpt-5.6-luna", "model": "gpt-5.6-luna"}]``.
+    :returns: The first row naming the same model, or ``None`` when no row
+        does (an empty catalog included).
+    """
+    if not isinstance(model, str) or not model.strip():
+        return None
+    target = comparable_model_id(model)
+    for option in options:
+        if not isinstance(option, Mapping):
+            continue
+        slug = option.get("id")
+        if not isinstance(slug, str) or not slug.strip():
+            continue
+        # ``model`` is the servable id behind the row when codex reports one
+        # separately from its own slug; matching either side keeps the
+        # translation working whichever spelling the deployment lists.
+        for spelling in (slug, option.get("model")):
+            if isinstance(spelling, str) and comparable_model_id(spelling) == target:
+                return option
+    return None
+
+
 def codex_reachable_model_slug(
     model: str,
     options: Iterable[Mapping[str, Any]],  # type: ignore[explicit-any]  # raw model/list rows
@@ -172,19 +203,26 @@ def codex_reachable_model_slug(
     :returns: The matching row's ``id``, or ``None`` when no row names the
         same model (an empty catalog included).
     """
-    if not isinstance(model, str) or not model.strip():
+    row = codex_reachable_model_row(model, options)
+    if row is None:
         return None
-    target = comparable_model_id(model)
-    for option in options:
-        if not isinstance(option, Mapping):
-            continue
-        slug = option.get("id")
-        if not isinstance(slug, str) or not slug.strip():
-            continue
-        # ``model`` is the servable id behind the row when codex reports one
-        # separately from its own slug; matching either side keeps the
-        # translation working whichever spelling the deployment lists.
-        for spelling in (slug, option.get("model")):
-            if isinstance(spelling, str) and comparable_model_id(spelling) == target:
-                return slug.strip()
-    return None
+    return str(row["id"]).strip()
+
+
+def codex_row_efforts(row: Mapping[str, Any]) -> frozenset[str] | None:  # type: ignore[explicit-any]  # raw model/list row
+    """Read the reasoning efforts a ``model/list`` row says its model accepts.
+
+    :param row: One raw ``model/list`` row, e.g.
+        ``{"supportedReasoningEfforts": [{"reasoningEffort": "low"}]}``.
+    :returns: The declared efforts, or ``None`` when the row declares none
+        (an older app-server), so the caller does not clamp on no evidence.
+    """
+    declared = row.get("supportedReasoningEfforts")
+    if not isinstance(declared, list):
+        return None
+    efforts = {
+        entry["reasoningEffort"]
+        for entry in declared
+        if isinstance(entry, Mapping) and isinstance(entry.get("reasoningEffort"), str)
+    }
+    return frozenset(efforts) or None

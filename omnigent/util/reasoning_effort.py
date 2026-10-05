@@ -91,7 +91,8 @@ def nearest_pi_thinking_level(level: str, available: Iterable[str]) -> str | Non
     :returns: The level to send, or ``None`` when *available* is empty (pi
         reported nothing usable, so the caller should leave the level alone).
     """
-    offered = [value for value in PI_THINKING_LADDER if value in set(available)]
+    available_set = set(available)
+    offered = [value for value in PI_THINKING_LADDER if value in available_set]
     if not offered:
         return None
     if level in offered:
@@ -147,11 +148,52 @@ def efforts_for_harness(harness: str | None) -> frozenset[str] | None:
     }.get(capabilities.effort, frozenset())
 
 
+#: Canonical effort rungs, weakest to strongest.
+EFFORT_LADDER: tuple[str, ...] = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+)
+
+
 def format_supported(values: Iterable[str]) -> str:
     """Return a stable comma-separated supported-values string."""
-    order = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
     values_set = set(values)
-    return ", ".join(value for value in order if value in values_set)
+    return ", ".join(value for value in EFFORT_LADDER if value in values_set)
+
+
+def nearest_supported_effort(effort: str, supported: Iterable[str]) -> str | None:
+    """Clamp *effort* to the closest rung a model supports.
+
+    A model that skips a rung must not 400 the turn, so pick the nearest
+    offered rung instead. Ties resolve downward, spending fewer tokens than
+    asked for rather than more. ``none`` turns reasoning off, so it is only a
+    landing spot for a request that asked for ``none`` or has nothing else.
+
+    :param effort: The requested effort, e.g. ``"max"``.
+    :param supported: Efforts the target model accepts.
+    :returns: *effort* when supported, else the nearest supported rung, or
+        ``None`` when nothing usable is known (empty *supported* or an effort
+        outside :data:`EFFORT_LADDER`), so the caller leaves the effort alone.
+    """
+    supported_set = set(supported)
+    offered = [rung for rung in EFFORT_LADDER if rung in supported_set]
+    if not offered:
+        return None
+    if effort in offered:
+        return effort
+    if effort not in EFFORT_LADDER:
+        return None
+    reasoning = [rung for rung in offered if rung != "none"]
+    candidates = reasoning if effort != "none" and reasoning else offered
+    target = EFFORT_LADDER.index(effort)
+    # Ascending order + stable min(): an equidistant pair resolves downward.
+    return min(candidates, key=lambda rung: abs(EFFORT_LADDER.index(rung) - target))
 
 
 def unsupported_effort_message(effort: str, provider: str, supported: Iterable[str]) -> str:

@@ -9,7 +9,9 @@ from omnigent.models.codex_model_vocabulary import (
     EXTENDED_MODEL_DEFAULT_EFFORT,
     EXTENDED_MODEL_EFFORTS,
     clamp_spawn_effort,
+    codex_reachable_model_row,
     codex_reachable_model_slug,
+    codex_row_efforts,
     codex_spawn_model,
     comparable_model_id,
 )
@@ -147,6 +149,41 @@ def test_malformed_rows_are_skipped() -> None:
     options: list[object] = ["nonsense", {"model": "gpt-5.6-luna"}, {"id": "  "}]
 
     assert codex_reachable_model_slug("databricks-gpt-5-6-luna", options) is None  # type: ignore[arg-type]
+
+
+def test_the_matching_row_is_returned_whole() -> None:
+    """The row carries the ladder, so a routed switch reads it without a second lookup."""
+    row = {"id": "gpt-5.5", "model": "gpt-5.5", "supportedReasoningEfforts": []}
+
+    assert codex_reachable_model_row("databricks-gpt-5-5", [{"id": "gpt-5.6-luna"}, row]) is row
+    assert codex_reachable_model_row("databricks-claude-opus-5", [row]) is None
+
+
+def test_row_efforts_read_the_declared_ladder() -> None:
+    row = {
+        "id": "gpt-5.4",
+        "supportedReasoningEfforts": [
+            {"reasoningEffort": "low", "description": "Low"},
+            {"reasoningEffort": "xhigh"},
+        ],
+    }
+
+    assert codex_row_efforts(row) == frozenset({"low", "xhigh"})
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        # An older app-server declares no ladder at all.
+        {"id": "gpt-5.4"},
+        {"id": "gpt-5.4", "supportedReasoningEfforts": []},
+        {"id": "gpt-5.4", "supportedReasoningEfforts": "low"},
+        {"id": "gpt-5.4", "supportedReasoningEfforts": ["low", {"reasoningEffort": 3}]},
+    ],
+)
+def test_row_efforts_without_a_usable_ladder_is_none(row: dict[str, object]) -> None:
+    """No evidence is not an empty ladder: the caller must not clamp on it."""
+    assert codex_row_efforts(row) is None
 
 
 def test_catalog_prefixes_match_the_claude_vocabulary() -> None:

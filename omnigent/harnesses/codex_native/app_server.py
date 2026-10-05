@@ -1115,10 +1115,17 @@ def _codex_rejects_request_field(exc: CodexAppServerResponseError, field: str) -
     )
 
 
-async def list_codex_model_options(client: CodexAppServerClient) -> list[_JsonObject]:
-    """Read every visible model from an initialized Codex app-server client.
+async def list_codex_model_options(
+    client: CodexAppServerClient,
+    *,
+    include_hidden: bool = False,
+) -> list[_JsonObject]:
+    """Read the models an initialized Codex app-server client lists.
 
     :param client: Connected Codex app-server client.
+    :param include_hidden: Also read hidden rows (legacy models a thread can
+        still run on); by default only visible rows are read. A server that
+        rejects the field lists visible rows only.
     :returns: Raw ``model/list`` rows in Codex preference order.
     :raises ValueError: When Codex returns a malformed response.
     """
@@ -1126,7 +1133,7 @@ async def list_codex_model_options(client: CodexAppServerClient) -> list[_JsonOb
     cursor: str | None = None
     include_hidden_supported = True
     while True:
-        params: CodexParams = {"includeHidden": False} if include_hidden_supported else {}
+        params: CodexParams = {"includeHidden": include_hidden} if include_hidden_supported else {}
         if cursor is not None:
             params["cursor"] = cursor
         try:

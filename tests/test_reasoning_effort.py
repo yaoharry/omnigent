@@ -26,6 +26,7 @@ from omnigent.util.reasoning_effort import (
     effort_for_model_switch,
     model_effort_caps,
     nearest_pi_thinking_level,
+    nearest_supported_effort,
     to_pi_thinking_level,
     validate_effort,
 )
@@ -227,6 +228,38 @@ def test_nearest_pi_thinking_level_clamps_to_reported_levels() -> None:
     # Nothing reported (or an unknown rung) → the caller leaves the level alone.
     assert nearest_pi_thinking_level("high", []) is None
     assert nearest_pi_thinking_level("bogus", ["low"]) is None
+    # A one-shot iterable is read once, not re-consumed per rung.
+    assert nearest_pi_thinking_level("xhigh", iter(["off", "low", "high"])) == "high"
+
+
+def test_nearest_supported_effort_clamps_to_the_models_ladder() -> None:
+    """A rung the model skips clamps to the closest offered one, ties downward."""
+    ladder = ["none", "low", "medium", "high", "xhigh"]
+    assert nearest_supported_effort("high", ladder) == "high"
+    # The carried-over top rung lands on the model's own ceiling.
+    assert nearest_supported_effort("max", ladder) == "xhigh"
+    assert nearest_supported_effort("ultra", ladder) == "xhigh"
+    # ``minimal`` is absent; ``none`` would switch reasoning off, so ``low`` wins.
+    assert nearest_supported_effort("minimal", ladder) == "low"
+    assert nearest_supported_effort("minimal", ["low", "medium", "max"]) == "low"
+    assert nearest_supported_effort("minimal", ["none"]) == "none"
+    assert nearest_supported_effort("none", ["low", "medium"]) == "low"
+    assert nearest_supported_effort("xhigh", ["low", "medium", "high"]) == "high"
+    # medium is equidistant from low and high → the lower rung wins.
+    assert nearest_supported_effort("medium", ["low", "high"]) == "low"
+
+
+def test_nearest_supported_effort_accepts_a_one_shot_iterable() -> None:
+    """A generator of supported rungs is read once, not re-consumed per rung."""
+    assert nearest_supported_effort("max", (rung for rung in ["low", "high", "xhigh"])) == "xhigh"
+    assert nearest_supported_effort("minimal", iter(["none", "low", "max"])) == "low"
+
+
+def test_nearest_supported_effort_leaves_unknowns_alone() -> None:
+    """No ladder or an unrecognised rung means no evidence, so no answer."""
+    assert nearest_supported_effort("high", []) is None
+    assert nearest_supported_effort("bogus", ["low", "high"]) is None
+    assert nearest_supported_effort("high", ["bogus"]) is None
 
 
 def test_efforts_for_harness_distinguishes_unsupported_from_unknown() -> None:

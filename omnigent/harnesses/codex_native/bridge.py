@@ -12,7 +12,7 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterator, MutableMapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -770,6 +770,32 @@ def write_codex_config_effort(bridge_dir: Path, effort: str) -> bool:
         "model_reasoning_effort",
         effort,
     )
+
+
+def effort_change_for_model_row(
+    effort: str | None,
+    row: Mapping[str, object],
+) -> str | None:
+    """
+    Return the effort to move to when *effort* is not valid on *row*'s model.
+
+    ``thread/settings/update`` keeps the thread's effort across a model switch,
+    so an effort picked for one model (e.g. ``max``) reaches a model whose
+    ladder stops lower and the gateway rejects every turn. The live
+    ``model/list`` row is the ladder authority; this clamps to its nearest rung.
+
+    :param effort: The thread's current effort, e.g. ``"max"``, or ``None``.
+    :param row: The switched-to model's raw ``model/list`` row.
+    :returns: The nearest supported effort, or ``None`` when nothing needs to
+        change (no effort, no declared ladder, or *effort* is on the ladder).
+    """
+    from omnigent.models.codex_model_vocabulary import codex_row_efforts
+    from omnigent.util.reasoning_effort import nearest_supported_effort
+
+    supported = codex_row_efforts(row)
+    if not effort or supported is None or effort in supported:
+        return None
+    return nearest_supported_effort(effort, supported)
 
 
 def _upsert_top_level_config_key(

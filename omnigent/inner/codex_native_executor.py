@@ -8,7 +8,9 @@ import binascii
 import json
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
@@ -19,6 +21,7 @@ from omnigent.harnesses.codex_native.app_server import (
     CodexAppServerResponseError,
     client_for_transport,
     is_stale_active_turn_error,
+    list_codex_model_options,
 )
 from omnigent.harnesses.codex_native.bridge import (
     CODEX_NATIVE_BRIDGE_DIR_ENV_VAR,
@@ -28,11 +31,14 @@ from omnigent.harnesses.codex_native.bridge import (
     CodexStartupFailure,
     cancel_pending_mcp_startup,
     clear_active_turn_id_if_matches,
+    effort_change_for_model_row,
     mcp_startup_waiting_detail,
     read_bridge_startup_error,
     read_bridge_startup_failure,
     read_bridge_startup_timeout,
     read_bridge_state,
+    read_codex_config_effort,
+    read_codex_config_model,
     read_mcp_startup,
     update_active_turn_id,
     write_codex_config_effort,
@@ -61,6 +67,7 @@ from omnigent.inner.native_attachments import (
     requires_filesystem,
     unresolved_attachment_marker,
 )
+from omnigent.models.codex_model_vocabulary import codex_reachable_model_row
 from omnigent.util.reasoning_effort import (
     CODEX_NATIVE_EFFORTS,
     effort_for_model_switch,
@@ -73,6 +80,12 @@ _LEGACY_BRIDGE_STATE_WAIT_SECONDS = 60.0
 _BRIDGE_STATE_FAST_POLL_SECONDS = 0.05
 _BRIDGE_STATE_FAST_POLL_WINDOW_SECONDS = 2.0
 _BRIDGE_STATE_SLOW_POLL_SECONDS = 0.25
+# A cold app-server answers model/list in about a second; a stalled one must
+# not hold the turn, so give up quickly and leave the turn as it was.
+_EFFORT_CATALOG_TIMEOUT_S = 10.0
+# After a failed or timed-out read the catalog is left alone this long, so a
+# wedged app-server costs one wait and one warning instead of one per turn.
+_EFFORT_CATALOG_RETRY_S = 300.0
 
 
 async def _wait_for_bridge_state(
@@ -126,6 +139,90 @@ def _bridge_state_wait_seconds(bridge_dir: Path) -> float:
     )
 
 
+@dataclass
+class _EffortFit:
+    """
+    What one executor has learned about the efforts its thread's model offers.
+
+    :param verdicts: (model, effort) pairs already settled, each mapped to the
+        effort to use instead, or ``None`` when the model offers it as given.
+    :param retry_at: ``time.monotonic()`` reading before which the catalog is
+        not read again, after a read that failed or timed out.
+    """
+
+    verdicts: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    retry_at: float = 0.0
+
+
+async def _overrides_fitting_effort(
+    client: CodexAppServerClient,
+    bridge_dir: Path,
+    session_id: str,
+    overrides: Mapping[str, object],
+    fit: _EffortFit,
+) -> Mapping[str, object]:
+    """
+    Move the turn's effort onto a rung the thread's model offers.
+
+    A model switch (routing, child spawn, web pick) keeps the thread's effort,
+    and a model whose ladder stops lower rejects it, so ``model/list`` decides.
+    The runner re-sends the session's stored effort every turn, so each
+    (model, effort) verdict is kept and re-applied. A catalog that cannot be
+    read leaves the turn as it was, and is not asked again for a while.
+
+    :param client: Connected app-server client.
+    :param bridge_dir: Native Codex bridge directory.
+    :param session_id: Omnigent session id, for the diagnostic event.
+    :param overrides: The turn's ``thread/settings/update`` overrides.
+    :param fit: This executor's verdicts and catalog retry deadline.
+    :returns: *overrides*, with ``effort`` moved when the model lacks it.
+    """
+    raw_model = overrides.get("model")
+    model = raw_model if isinstance(raw_model, str) and raw_model else None
+    model = model or read_codex_config_model(bridge_dir)
+    raw_effort = overrides.get("effort")
+    effort = raw_effort if isinstance(raw_effort, str) and raw_effort else None
+    effort = effort or read_codex_config_effort(bridge_dir)
+    if not model or not effort:
+        return overrides
+    if (model, effort) not in fit.verdicts:
+        if time.monotonic() < fit.retry_at:
+            return overrides
+        try:
+            # Hidden rows too: a legacy model is still runnable and has a ladder.
+            rows = await asyncio.wait_for(
+                list_codex_model_options(client, include_hidden=True),
+                timeout=_EFFORT_CATALOG_TIMEOUT_S,
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable catalog must not sink the turn
+            fit.retry_at = time.monotonic() + _EFFORT_CATALOG_RETRY_S
+            _logger.warning(
+                "Codex native effort check skipped for %.0fs: model/list failed (%r)",
+                _EFFORT_CATALOG_RETRY_S,
+                exc,
+            )
+            return overrides
+        row = codex_reachable_model_row(model, rows)
+        fitted = effort_change_for_model_row(effort, row) if row is not None else None
+        fit.verdicts[(model, effort)] = fitted
+        if fitted is not None:
+            fit.verdicts[(model, fitted)] = None
+            _logger.info(
+                "Codex native effort %s is not offered by the thread's model; using %s",
+                effort,
+                fitted,
+                extra=debug_event(
+                    "codex_effort_fitted",
+                    session_id=session_id,
+                    model=model,
+                    requested_effort=effort,
+                    applied_effort=fitted,
+                ),
+            )
+    fitted = fit.verdicts[(model, effort)]
+    return overrides if fitted is None else {**overrides, "effort": fitted}
+
+
 async def _start_codex_turn(
     client: CodexAppServerClient,
     *,
@@ -133,8 +230,19 @@ async def _start_codex_turn(
     state: CodexNativeBridgeState,
     input_items: list[dict[str, object]],
     settings_overrides: Mapping[str, object],
+    effort_fit: _EffortFit | None = None,
 ) -> None:
-    """Apply optional settings and start one Codex turn on an idle thread."""
+    """
+    Apply optional settings and start one Codex turn on an idle thread.
+
+    :param effort_fit: When given, the overrides' effort is first fitted to the
+        thread's model. Only a turn start applies overrides, so a steer never
+        pays for the fit.
+    """
+    if effort_fit is not None:
+        settings_overrides = await _overrides_fitting_effort(
+            client, bridge_dir, state.session_id, settings_overrides, effort_fit
+        )
     if settings_overrides:
         await client.request(
             "thread/settings/update",
@@ -215,6 +323,7 @@ async def _inject_codex_turn(
     state: CodexNativeBridgeState,
     input_items: list[dict[str, object]],
     settings_overrides: Mapping[str, object],
+    effort_fit: _EffortFit | None = None,
 ) -> None:
     """Steer an active turn or start one, recovering one proven stale steer."""
     if state.active_turn_id is None:
@@ -224,6 +333,7 @@ async def _inject_codex_turn(
             state=state,
             input_items=input_items,
             settings_overrides=settings_overrides,
+            effort_fit=effort_fit,
         )
         return
 
@@ -266,6 +376,7 @@ async def _inject_codex_turn(
         state=recovered_state,
         input_items=input_items,
         settings_overrides=settings_overrides,
+        effort_fit=effort_fit,
     )
 
 
@@ -291,6 +402,8 @@ class CodexNativeExecutor(Executor):
         # See designs/NATIVE_INJECTION_SERIALIZATION.md. Relies on the
         # adapter caching one executor per conversation.
         self._inject_lock = asyncio.Lock()
+        # What the effort fit has settled so far; see _overrides_fitting_effort.
+        self._effort_fit = _EffortFit()
 
     def supports_streaming(self) -> bool:
         """:returns: ``False`` because output is emitted by the native forwarder."""
@@ -577,6 +690,7 @@ class CodexNativeExecutor(Executor):
                                 state=state,
                                 input_items=input_items,
                                 settings_overrides=settings_overrides,
+                                effort_fit=self._effort_fit,
                             )
                     except Exception as exc:
                         _logger.exception(

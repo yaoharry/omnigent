@@ -758,6 +758,21 @@ async def test_old_codex_model_list_retries_without_include_hidden_and_paginates
     ]
 
 
+async def test_codex_model_list_asks_for_hidden_rows_only_on_request() -> None:
+    from omnigent.harnesses.codex_native import app_server
+
+    client = AsyncMock(spec=CodexAppServerClient)
+    client.request.return_value = {"result": {"data": [], "nextCursor": None}}
+
+    await app_server.list_codex_model_options(client)
+    await app_server.list_codex_model_options(client, include_hidden=True)
+
+    assert [call.args for call in client.request.await_args_list] == [
+        ("model/list", {"includeHidden": False}),
+        ("model/list", {"includeHidden": True}),
+    ]
+
+
 @pytest.mark.parametrize("code", [-32600, -32601, -32602, -32603])
 async def test_codex_model_list_does_not_hide_failures_or_retry_forever(code: int) -> None:
     from omnigent.harnesses.codex_native import app_server

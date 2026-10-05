@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -56,6 +57,10 @@ class _FakeCodexNativeClient:
     requests: list[tuple[str, dict[str, Any]]] = []
     created: list[tuple[Path | None, str | None, str]] = []
     next_turn = 1
+    # ``model/list`` rows served to the executor's effort check, kept out of
+    # ``requests`` so turn-shape assertions stay about the turn.
+    catalog: list[dict[str, Any]] = []
+    catalog_reads = 0
 
     def __init__(
         self,
@@ -102,6 +107,15 @@ class _FakeCodexNativeClient:
         :param params: JSON-RPC params.
         :returns: Codex-shaped response payload.
         """
+        if method == "model/list":
+            type(self).catalog_reads += 1
+            # Like the app-server, hidden rows are listed only when asked for.
+            rows = [
+                row
+                for row in type(self).catalog
+                if params.get("includeHidden") or not row.get("hidden")
+            ]
+            return {"result": {"data": rows, "nextCursor": None}}
         type(self).requests.append((method, params))
         if method == "turn/start":
             turn_id = f"turn_{type(self).next_turn}"
@@ -1443,6 +1457,431 @@ def test_model_and_effort_settings_update_mirrors_both_into_config_toml(
 
     assert read_codex_config_model(tmp_path) == "gpt-5.3-codex"
     assert read_codex_config_effort(tmp_path) == "high"
+
+
+def _ladder(*efforts: str) -> list[dict[str, str]]:
+    """
+    Build a ``supportedReasoningEfforts`` value as the app-server reports it.
+
+    :param efforts: Effort names the model offers, e.g. ``"low"``.
+    :returns: One option per effort.
+    """
+    return [{"reasoningEffort": effort} for effort in efforts]
+
+
+def _install_effort_check_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    catalog: list[dict[str, Any]],
+    *,
+    model: str,
+    effort: str,
+) -> None:
+    """
+    Start a thread on *model* at *effort* with a scripted ``model/list``.
+
+    :param monkeypatch: pytest monkeypatch fixture.
+    :param tmp_path: Bridge directory.
+    :param catalog: ``model/list`` rows the fake app-server serves.
+    :param model: Model recorded in the session's config.toml.
+    :param effort: Effort recorded in the session's config.toml.
+    :returns: None.
+    """
+    _FakeCodexNativeClient.requests = []
+    _FakeCodexNativeClient.created = []
+    _FakeCodexNativeClient.next_turn = 1
+    _FakeCodexNativeClient.catalog_reads = 0
+    monkeypatch.setattr(_FakeCodexNativeClient, "catalog", catalog)
+    monkeypatch.setattr(
+        "omnigent.harnesses.codex_native.app_server.CodexAppServerClient",
+        _FakeCodexNativeClient,
+    )
+    _start_state(tmp_path)
+    home = tmp_path / "codex-home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text(f'model = "{model}"\nmodel_reasoning_effort = "{effort}"\n')
+
+
+def test_model_switch_moves_an_effort_the_new_model_lacks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    A routed switch keeps the thread's effort, which the new model may reject.
+
+    The turn's ``thread/settings/update`` carries the nearest rung the new
+    model's ``model/list`` row offers, and config.toml records it.
+    """
+    caplog.set_level(logging.INFO, logger="omnigent.inner.codex_native_executor")
+    _install_effort_check_client(
+        monkeypatch,
+        tmp_path,
+        [
+            {"id": "gpt-5.6-sol", "supportedReasoningEfforts": _ladder("low", "high", "max")},
+            {
+                "id": "gpt-5.6-luna",
+                "supportedReasoningEfforts": _ladder("low", "medium", "high", "xhigh"),
+            },
+        ],
+        model="gpt-5.6-sol",
+        effort="max",
+    )
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    _run_turn_with_config(executor, "hello", ExecutorConfig(model="databricks-gpt-5-6-luna"))
+
+    assert _FakeCodexNativeClient.requests[0] == (
+        "thread/settings/update",
+        {"threadId": "thread_123", "model": "databricks-gpt-5-6-luna", "effort": "xhigh"},
+    )
+    assert read_codex_config_effort(tmp_path) == "xhigh"
+    events = [r for r in caplog.records if getattr(r, "event_name", None) == "codex_effort_fitted"]
+    assert [getattr(event, "attributes", None) for event in events] == [
+        {
+            "model": "databricks-gpt-5-6-luna",
+            "requested_effort": "max",
+            "applied_effort": "xhigh",
+        }
+    ]
+
+
+def test_a_spawned_threads_pinned_effort_is_checked_without_a_model_switch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A thread launched on a model and effort that disagree is fixed on its first turn."""
+    _install_effort_check_client(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "id": "gpt-5.4",
+                "supportedReasoningEfforts": _ladder("low", "medium", "high", "xhigh"),
+            }
+        ],
+        model="gpt-5.4",
+        effort="max",
+    )
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    _run_turn_with_config(executor, "hello", ExecutorConfig())
+    _start_state(tmp_path)  # the first turn ended, so the next one starts fresh
+    _run_turn_with_config(executor, "again", ExecutorConfig())
+
+    # The fitted effort is now the config's own, so the second turn settles it
+    # without another catalog read or settings update.
+    assert [method for method, _params in _FakeCodexNativeClient.requests] == [
+        "thread/settings/update",
+        "turn/start",
+        "turn/start",
+    ]
+    assert _FakeCodexNativeClient.requests[0][1] == {"threadId": "thread_123", "effort": "xhigh"}
+    assert _FakeCodexNativeClient.catalog_reads == 1
+    assert read_codex_config_effort(tmp_path) == "xhigh"
+
+
+def test_an_effort_the_model_offers_is_left_alone_and_checked_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A valid pair costs one catalog read for the executor's lifetime, not one per turn."""
+    _install_effort_check_client(
+        monkeypatch,
+        tmp_path,
+        [{"id": "gpt-5.4", "supportedReasoningEfforts": _ladder("low", "high")}],
+        model="gpt-5.4",
+        effort="high",
+    )
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    _run_turn_with_config(executor, "a", ExecutorConfig())
+    _start_state(tmp_path)  # the first turn ended, so the next one starts fresh
+    _run_turn_with_config(executor, "b", ExecutorConfig())
+
+    assert [method for method, _params in _FakeCodexNativeClient.requests] == [
+        "turn/start",
+        "turn/start",
+    ]
+    assert _FakeCodexNativeClient.catalog_reads == 1
+    assert read_codex_config_effort(tmp_path) == "high"
+
+
+def _unreadable_catalog_client(
+    failures: int, *, stall: bool = False
+) -> type[_FakeCodexNativeClient]:
+    """
+    Build a fake client whose first *failures* ``model/list`` reads do not answer.
+
+    :param failures: How many reads fail before the catalog answers.
+    :param stall: ``True`` to hang each failing read instead of raising.
+    :returns: A fresh client class whose ``reads`` counts every ``model/list``
+        attempt, answered or not.
+    """
+
+    class _Client(_FakeCodexNativeClient):
+        reads = 0
+        failures_left = failures
+
+        async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            """
+            Fail or hang the first ``model/list`` reads; otherwise act like the base fake.
+
+            :param method: JSON-RPC method.
+            :param params: JSON-RPC params.
+            :returns: Codex-shaped response payload.
+            """
+            if method == "model/list":
+                type(self).reads += 1
+                if type(self).failures_left:
+                    type(self).failures_left -= 1
+                    if stall:
+                        await asyncio.sleep(3600)
+                    raise RuntimeError("app-server refused model/list")
+            return await super().request(method, params)
+
+    return _Client
+
+
+def test_an_unreadable_catalog_leaves_the_turn_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed ``model/list`` is no evidence: the turn still starts, untouched."""
+    client = _unreadable_catalog_client(failures=1)
+    _install_effort_check_client(monkeypatch, tmp_path, [], model="gpt-5.4", effort="max")
+    monkeypatch.setattr("omnigent.harnesses.codex_native.app_server.CodexAppServerClient", client)
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    _run_turn_with_config(executor, "hello", ExecutorConfig())
+
+    assert [method for method, _params in client.requests] == ["turn/start"]
+    assert read_codex_config_effort(tmp_path) == "max"
+
+
+@pytest.mark.parametrize(
+    ("model", "slug", "ladder", "hidden", "requested", "expected"),
+    [
+        pytest.param(
+            "databricks-gpt-5-6-sol",
+            "gpt-5.6-sol",
+            ("none", "low", "medium", "high", "xhigh", "max"),
+            False,
+            "minimal",
+            "low",
+            id="minimal-is-not-on-the-ladder",
+        ),
+        pytest.param(
+            "databricks-gpt-5-4",
+            "gpt-5.4",
+            ("none", "low", "medium", "high", "xhigh"),
+            True,
+            "max",
+            "xhigh",
+            id="max-is-above-a-hidden-models-ladder",
+        ),
+    ],
+)
+def test_a_spawned_child_keeps_a_supported_effort_on_every_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    model: str,
+    slug: str,
+    ladder: tuple[str, ...],
+    hidden: bool,
+    requested: str,
+    expected: str,
+) -> None:
+    """
+    A child created with an effort its model rejects never sends that effort.
+
+    The runner re-sends the session's stored effort on every turn, so the fit
+    has to hold on the first turn and on each one after it. A legacy model is
+    listed only as a hidden row, which still carries the ladder.
+    """
+    row: dict[str, Any] = {"id": slug, "supportedReasoningEfforts": _ladder(*ladder)}
+    if hidden:
+        row["hidden"] = True
+    _install_effort_check_client(monkeypatch, tmp_path, [row], model=slug, effort=requested)
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+    config = ExecutorConfig(model=model, extra={"reasoning_effort": requested})
+
+    _run_turn_with_config(executor, "first", config)
+    _start_state(tmp_path)  # the first turn ended, so the next one starts fresh
+    _run_turn_with_config(executor, "second", config)
+
+    updates = [
+        params
+        for method, params in _FakeCodexNativeClient.requests
+        if method == "thread/settings/update"
+    ]
+    assert updates == [{"threadId": "thread_123", "model": model, "effort": expected}] * 2
+    assert _FakeCodexNativeClient.catalog_reads == 1
+    assert read_codex_config_effort(tmp_path) == expected
+
+
+def test_a_stalled_catalog_costs_one_wait_not_one_per_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A ``model/list`` that never answers is given up on once, and later turns do not wait."""
+    caplog.set_level(logging.WARNING, logger="omnigent.inner.codex_native_executor")
+    client = _unreadable_catalog_client(failures=99, stall=True)
+    _install_effort_check_client(monkeypatch, tmp_path, [], model="gpt-5.4", effort="max")
+    monkeypatch.setattr("omnigent.harnesses.codex_native.app_server.CodexAppServerClient", client)
+    monkeypatch.setattr(codex_native_executor, "_EFFORT_CATALOG_TIMEOUT_S", 0.05)
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    for text in ("one", "two", "three"):
+        _run_turn_with_config(executor, text, ExecutorConfig())
+        _start_state(tmp_path)  # the turn ended, so the next one starts fresh
+
+    assert [method for method, _params in client.requests] == ["turn/start"] * 3
+    assert client.reads == 1
+    assert read_codex_config_effort(tmp_path) == "max"
+    skipped = [r for r in caplog.records if "effort check skipped" in r.getMessage()]
+    assert len(skipped) == 1
+
+
+def test_a_failed_catalog_is_not_read_again_within_the_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Repeated failures do not re-read the catalog, nor warn, on every turn."""
+    caplog.set_level(logging.WARNING, logger="omnigent.inner.codex_native_executor")
+    client = _unreadable_catalog_client(failures=99)
+    _install_effort_check_client(monkeypatch, tmp_path, [], model="gpt-5.4", effort="max")
+    monkeypatch.setattr("omnigent.harnesses.codex_native.app_server.CodexAppServerClient", client)
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    for text in ("one", "two", "three", "four"):
+        _run_turn_with_config(executor, text, ExecutorConfig())
+        _start_state(tmp_path)  # the turn ended, so the next one starts fresh
+
+    assert [method for method, _params in client.requests] == ["turn/start"] * 4
+    assert client.reads == 1
+    skipped = [r for r in caplog.records if "effort check skipped" in r.getMessage()]
+    assert len(skipped) == 1
+
+
+def test_the_catalog_is_read_again_once_the_cooldown_has_passed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """After the cooldown a turn reads the catalog again, and fits the effort if it answers."""
+    now = [1000.0]
+    monkeypatch.setattr(codex_native_executor, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    client = _unreadable_catalog_client(failures=1)
+    _install_effort_check_client(
+        monkeypatch,
+        tmp_path,
+        [{"id": "gpt-5.4", "supportedReasoningEfforts": _ladder("low", "medium", "high")}],
+        model="gpt-5.4",
+        effort="max",
+    )
+    monkeypatch.setattr("omnigent.harnesses.codex_native.app_server.CodexAppServerClient", client)
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+    cooldown = codex_native_executor._EFFORT_CATALOG_RETRY_S
+
+    _run_turn_with_config(executor, "fails", ExecutorConfig())
+    _start_state(tmp_path)  # the turn ended, so the next one starts fresh
+    now[0] += cooldown - 1
+    _run_turn_with_config(executor, "still cooling", ExecutorConfig())
+    _start_state(tmp_path)
+    assert client.reads == 1
+
+    now[0] += 2
+    _run_turn_with_config(executor, "cooled", ExecutorConfig())
+
+    assert client.reads == 2
+    assert [method for method, _params in client.requests] == [
+        "turn/start",
+        "turn/start",
+        "thread/settings/update",
+        "turn/start",
+    ]
+    assert client.requests[2][1] == {"threadId": "thread_123", "effort": "high"}
+    assert read_codex_config_effort(tmp_path) == "high"
+
+
+def test_steering_an_active_turn_reads_no_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A message steered into a running turn applies no settings, so it needs no effort fit."""
+    _install_effort_check_client(
+        monkeypatch,
+        tmp_path,
+        [{"id": "gpt-5.4", "supportedReasoningEfforts": _ladder("low", "medium", "high")}],
+        model="gpt-5.4",
+        effort="max",
+    )
+    _seed_bridge(tmp_path, active_turn_id="turn_running")
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    _run_turn_with_config(
+        executor,
+        "nudge",
+        ExecutorConfig(model="databricks-gpt-5-4", extra={"reasoning_effort": "max"}),
+    )
+
+    assert [method for method, _params in _FakeCodexNativeClient.requests] == ["turn/steer"]
+    assert _FakeCodexNativeClient.catalog_reads == 0
+
+
+def test_a_turn_started_after_a_stale_steer_is_fitted_like_any_other(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """When the steer finds its turn already over, the turn it starts instead gets the fit."""
+
+    class _StaleSteerClient(_FakeCodexNativeClient):
+        async def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+            """
+            Report the steered turn as over; otherwise act like the base fake.
+
+            :param method: JSON-RPC method.
+            :param params: JSON-RPC params.
+            :returns: Codex-shaped response payload.
+            """
+            if method == "turn/steer":
+                type(self).requests.append((method, params))
+                raise CodexAppServerResponseError(
+                    {"code": -32600, "message": "no active turn to steer"}
+                )
+            return await super().request(method, params)
+
+    _install_effort_check_client(
+        monkeypatch,
+        tmp_path,
+        [{"id": "gpt-5.4", "supportedReasoningEfforts": _ladder("low", "medium", "high")}],
+        model="gpt-5.4",
+        effort="max",
+    )
+    monkeypatch.setattr(
+        "omnigent.harnesses.codex_native.app_server.CodexAppServerClient", _StaleSteerClient
+    )
+    _seed_bridge(tmp_path, active_turn_id="turn_completed")
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    _run_turn_with_config(
+        executor,
+        "follow up",
+        ExecutorConfig(model="databricks-gpt-5-4", extra={"reasoning_effort": "max"}),
+    )
+
+    assert [method for method, _params in _StaleSteerClient.requests] == [
+        "turn/steer",
+        "thread/settings/update",
+        "turn/start",
+    ]
+    assert _StaleSteerClient.requests[1][1] == {
+        "threadId": "thread_123",
+        "model": "databricks-gpt-5-4",
+        "effort": "high",
+    }
 
 
 def test_no_settings_update_when_overrides_unset(

@@ -456,7 +456,8 @@ def _apply_thread_model(bridge_dir: Path, model: str) -> str | None:
     server-side gateway map that can go stale, and switching a pane onto a
     model its gateway cannot serve fails silently at the next turn — so a
     routed id no row names declines the switch instead, and the pane keeps
-    running on its own model.
+    running on its own model. The same row's effort ladder keeps the thread's
+    effort valid on the new model, moving it to the nearest rung it offers.
 
     :param bridge_dir: Native Codex bridge directory.
     :param model: Routed model id, e.g. ``"databricks-gpt-5-6-luna"``.
@@ -466,8 +467,13 @@ def _apply_thread_model(bridge_dir: Path, model: str) -> str | None:
     import asyncio
 
     from omnigent.harnesses.codex_native.app_server import client_for_transport
-    from omnigent.harnesses.codex_native.bridge import write_codex_config_model
-    from omnigent.models.codex_model_vocabulary import codex_reachable_model_slug
+    from omnigent.harnesses.codex_native.bridge import (
+        effort_change_for_model_row,
+        read_codex_config_effort,
+        write_codex_config_effort,
+        write_codex_config_model,
+    )
+    from omnigent.models.codex_model_vocabulary import codex_reachable_model_row
     from omnigent.runner.turn_routing import SETTINGS_UPDATE_TIMEOUT_S
 
     state = read_bridge_state(bridge_dir)
@@ -477,10 +483,11 @@ def _apply_thread_model(bridge_dir: Path, model: str) -> str | None:
     # The spelling codex accepted, mirrored into config.toml below so the
     # file and the live thread never disagree about the model.
     applied: str | None = None
+    applied_effort: str | None = None
     declined: str | None = None
 
     async def _switch() -> None:
-        nonlocal applied, declined
+        nonlocal applied, applied_effort, declined
         client = client_for_transport(state.socket_path, client_name="omnigent-route-turn-hook")
         await client.connect()
         try:
@@ -488,15 +495,20 @@ def _apply_thread_model(bridge_dir: Path, model: str) -> str | None:
             if rows is None:
                 declined = "could not read this pane's model catalog"
                 return
-            slug = codex_reachable_model_slug(model, rows)
-            if slug is None:
+            row = codex_reachable_model_row(model, rows)
+            if row is None:
                 declined = f"routed model not in this pane's catalog ({model})"
                 return
-            await client.request(
-                "thread/settings/update",
-                {"threadId": state.thread_id, "model": slug},
-            )
+            slug = str(row["id"]).strip()
+            params: dict[str, object] = {"threadId": state.thread_id, "model": slug}
+            # The thread keeps its effort across the switch, and the routed
+            # model may not offer that rung (e.g. a carried-over ``max``).
+            fitted_effort = effort_change_for_model_row(read_codex_config_effort(bridge_dir), row)
+            if fitted_effort is not None:
+                params["effort"] = fitted_effort
+            await client.request("thread/settings/update", params)
             applied = slug
+            applied_effort = fitted_effort
         finally:
             await client.close()
 
@@ -511,6 +523,12 @@ def _apply_thread_model(bridge_dir: Path, model: str) -> str | None:
     if not write_codex_config_model(bridge_dir, applied):
         print(
             f"omnigent codex route-turn hook: could not mirror {applied} into config.toml",
+            file=sys.stderr,
+        )
+    if applied_effort is not None and not write_codex_config_effort(bridge_dir, applied_effort):
+        print(
+            f"omnigent codex route-turn hook: could not mirror effort {applied_effort} "
+            "into config.toml",
             file=sys.stderr,
         )
     return None
