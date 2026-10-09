@@ -7619,6 +7619,10 @@ async def _dispatch_session_event_to_runner_impl(
 # timer, and the liveness-driven sidebar agree on when a dropped runner is
 # gone; a crash is reported separately by the daemon and never waits this out.
 RUNNER_DISCONNECT_GRACE_S: float = float(RUNNER_LIVENESS_TTL_S)
+# Reconnect window for a runner whose tunnel this server retired, e.g. a replica
+# re-home: it reconnects elsewhere, slowest while the new replica is busy (111 s
+# observed mid-rollout), so wait this long before checking where it went.
+RUNNER_REHOME_GRACE_S: float = 180.0
 # Delay between relay stream reconnect attempts inside the grace window.
 _RELAY_RETRY_INTERVAL_S: float = 0.5
 # Version marker for the bounded relay recovery event contract. Keep this on
@@ -7858,6 +7862,9 @@ async def _relay_runner_stream(
     lost stream retries inside that window instead of failing the
     session. An intentional Stop exits quietly at once.
 
+    A runner whose tunnel this server retired (a replica re-home) gets
+    :data:`RUNNER_REHOME_GRACE_S` instead, to reconnect to another replica.
+
     Past the grace the runner is genuinely gone — unless this server is the
     one shutting down (:func:`omnigent.server.shutdown_state.server_shutting_down`):
     it closed the tunnel itself, so the loss says nothing about the runner
@@ -7960,6 +7967,12 @@ async def _relay_runner_stream(
                         telemetry_schema=_RELAY_TELEMETRY_SCHEMA,
                     ),
                 )
+            transport = getattr(runner_client, "_transport", None)
+            # A runner this server retired is reconnecting to another replica;
+            # anchored to the retirement, so retries never push it further out.
+            retire_window = getattr(transport, "retire_window_remaining", None)
+            if retire_window is not None:
+                deadline = max(deadline, now + retire_window(RUNNER_REHOME_GRACE_S))
             if not lost.intentional and now + _RELAY_RETRY_INTERVAL_S < deadline:
                 retries += 1
                 _logger.info(
@@ -7975,7 +7988,6 @@ async def _relay_runner_stream(
                 # reason (an HTTP error), so keep the interval backoff: the
                 # waiter would return at once and spin. A client without a
                 # tunnel transport (in-process tests) also keeps the interval.
-                transport = getattr(runner_client, "_transport", None)
                 wait = getattr(transport, "wait_for_runner", None)
                 if wait is None or await wait(deadline - now):
                     await asyncio.sleep(_RELAY_RETRY_INTERVAL_S)
