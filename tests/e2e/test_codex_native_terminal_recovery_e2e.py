@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 import pytest
 import yaml
 
@@ -55,20 +56,17 @@ def _wait_for(check: Callable[[], Any], description: str, timeout: float = 60.0)
     raise AssertionError(f"Timed out waiting for {description}")
 
 
-def _app_server_pid(listen_url: str) -> int:
-    output = subprocess.run(
-        ["ps", "-ww", "-eo", "pid=,ppid=,args="],
-        capture_output=True,
-        text=True,
-        check=True,
-        timeout=10,
-    ).stdout
-    processes = {
-        int(pid): int(ppid)
-        for pid, ppid, args in (line.split(maxsplit=2) for line in output.splitlines())
-        if listen_url in args and "app-server" in args
-    }
-    # npm's Node launcher passes the same arguments to the native child.
+def _app_server_pid(codex_home: str) -> int:
+    processes: dict[int, int] = {}
+    for process in psutil.process_iter(["pid", "ppid", "cmdline"]):
+        try:
+            if "app-server" not in (process.info["cmdline"] or []):
+                continue
+            if process.environ().get("CODEX_HOME") == codex_home:
+                processes[process.pid] = process.info["ppid"]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    # npm's Node launcher and its native child share the private session home.
     matches = [pid for pid in processes if pid not in processes.values()]
     assert len(matches) == 1, f"Expected one app-server, found PIDs {matches}"
     return matches[0]
@@ -153,7 +151,7 @@ def test_codex_terminal_recovery_preserves_inflight_turn(
     try:
         terminal = ensure_terminal()
         state = _wait_for(lambda: read_bridge_state(bridge_dir), "Codex thread creation")
-        original_pid = _app_server_pid(state.socket_path)
+        original_pid = _app_server_pid(state.codex_home)
         original_thread = state.thread_id
         print(f"E2E started: app_server_pid={original_pid}, thread={original_thread}", flush=True)
 
@@ -193,12 +191,12 @@ def test_codex_terminal_recovery_preserves_inflight_turn(
             else:
                 _tmux(socket, "kill-server")
             _wait_for(terminal_gone, "terminal resource eviction")
-            assert _app_server_pid(state.socket_path) == original_pid
+            assert _app_server_pid(state.codex_home) == original_pid
 
             terminal = ensure_terminal()
             recovered = read_bridge_state(bridge_dir)
             assert recovered is not None
-            assert _app_server_pid(recovered.socket_path) == original_pid
+            assert _app_server_pid(recovered.codex_home) == original_pid
             assert recovered.thread_id == original_thread
             assert recovered.active_turn_id == active_turn
             assert terminal["metadata"]["tmux_socket"] != socket
