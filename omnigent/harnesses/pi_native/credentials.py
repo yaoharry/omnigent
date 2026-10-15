@@ -1725,6 +1725,13 @@ def resolve_pi_native_provider(
     binding = binding_for_harness(config, "pi-native")
     if binding is not None:
         entry = resolve_bound_provider(config, "pi-native", auth)
+        selection = _split_pi_native_model_selection(model)
+        # Picker values add a generated provider scope. Keep literal slash ids
+        # when removing that scope would select a model outside the binding.
+        if selection is not None and (
+            binding.model_allowlist is None or selection[1] in binding.model_allowlist
+        ):
+            _, model = selection
         selected = resolve_bound_model(config, "pi-native", model)
         if entry is None:
             raise ValueError("The Pi inference binding has no configured provider.")

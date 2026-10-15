@@ -34,6 +34,7 @@ from tests.e2e.conftest import configure_mock_llm, get_mock_requests
 
 _ROOT = Path(__file__).resolve().parents[2]
 _MODEL = "pi-version-journey"
+_SELECTION = f"omnigent-completions/{_MODEL}"
 _OBSERVER = """const fs = require('fs');
 module.exports = function() {
   fs.writeFileSync(require('path').join(process.cwd(), 'pi-started.json'),
@@ -108,7 +109,7 @@ def test_real_pi_cli_version_floor(
     surface: str,
     version_kind: str,
 ) -> None:
-    """An old CLI gives a remedy; a supported real Pi answers native and web input."""
+    """Old Pi gives a remedy; supported Pi answers a bound picker model on both inputs."""
     if shutil.which("tmux") is None or shutil.which("node") is None:
         pytest.skip("Real Pi launch requires tmux and node")
     binary, version = _pi_installation(version_kind)
@@ -154,6 +155,11 @@ def test_real_pi_cli_version_floor(
         (config_dir / "config.yaml").write_text(
             yaml.safe_dump(
                 {
+                    "inference": {
+                        "harnesses": {
+                            "pi-native": {"provider": "test", "model_allowlist": [_MODEL]},
+                        },
+                    },
                     "providers": {
                         "test": {
                             "kind": "gateway",
@@ -188,10 +194,12 @@ def test_real_pi_cli_version_floor(
                     spec_dir = tmp_path / "spec"
                     spec_dir.mkdir()
                     spec = _materialize_pi_agent_spec(spec_dir)
+                    spec_config = yaml.safe_load(spec.read_text())
+                    spec_config["executor"]["model"] = _SELECTION
                     created = post_session_bundle(
                         client.post,
                         "/v1/sessions",
-                        bundle_files({spec.name: spec.read_bytes()}),
+                        bundle_files({spec.name: yaml.safe_dump(spec_config).encode()}),
                         metadata={
                             "labels": {
                                 "omnigent.ui": "terminal",
@@ -215,6 +223,8 @@ def test_real_pi_cli_version_floor(
                         },
                     )
                     evidence["ensure"] = {"status": response.status_code, "body": response.text}
+                    if version_kind == "current":
+                        response.raise_for_status()
                 else:
                     cli_env = local_server_env(
                         {
@@ -354,6 +364,10 @@ def test_real_pi_cli_version_floor(
                         )
                     evidence["model_requests"] = get_mock_requests(
                         isolated_mock_llm_server_url, key=_MODEL
+                    )
+                    assert evidence["model_requests"]
+                    assert all(
+                        request["model"] == _MODEL for request in evidence["model_requests"]
                     )
                     terminal = client.get(
                         f"/v1/sessions/{session_id}/resources/terminals/terminal_pi_main"
