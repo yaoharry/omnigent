@@ -416,6 +416,10 @@ Cross-harness journeys:
 
 ## Gotchas
 
+- Codex conversation selection uses `omnigent codex --resume [CONVERSATION]`.
+  Passing native `resume` as an extra argument is rejected before session
+  creation; saved arguments receive the same guidance at startup.
+
 - A change to shared native-harness behavior (cleanup, idle handling,
   approvals, sign-in state, resume) must be checked on every harness it claims
   to cover. List the harnesses you actually drove; "all harnesses" means all

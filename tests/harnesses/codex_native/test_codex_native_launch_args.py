@@ -671,14 +671,21 @@ def test_reject_reserved_codex_transport_args_rejects(reserved_args: list[str]) 
         )
 
 
-def test_build_codex_native_server_rejects_transport_args_before_cli_discovery(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("app-server", "--listen", "ws://127.0.0.1:7100"), "runner-owned Codex transport"),
+        (("resume", "conv_saved"), "'resume' is reserved"),
+    ],
+)
+def test_build_codex_native_server_rejects_launch_args_before_cli_discovery(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, args: tuple[str, ...], message: str
 ) -> None:
     def unexpected_discovery() -> None:
         pytest.fail("invalid saved arguments must fail before preparing an app-server")
 
     monkeypatch.setattr(app_server, "_find_codex_cli", unexpected_discovery)
-    with pytest.raises(ValueError, match="runner-owned Codex transport"):
+    with pytest.raises(ValueError, match=message):
         app_server.build_codex_native_server(
             socket_path=tmp_path / "codex.sock",
             codex_home=tmp_path / "codex-home",
@@ -688,8 +695,25 @@ def test_build_codex_native_server_rejects_transport_args_before_cli_discovery(
             bridge_dir=tmp_path / "bridge",
             ap_server_url=None,
             ap_auth_headers={},
-            terminal_launch_args=("app-server", "--listen", "ws://127.0.0.1:7100"),
+            terminal_launch_args=args,
         )
+
+
+@pytest.mark.parametrize("thread_id", [None, "thread-existing"])
+@pytest.mark.parametrize(
+    "args",
+    [("resume",), ("resume", "conv_saved"), ("--model", "model-a", "resume", "--last")],
+)
+def test_remote_attach_rejects_caller_resume_selectors(
+    args: tuple[str, ...], thread_id: str | None
+) -> None:
+    with pytest.raises(ValueError, match="'resume' is reserved") as caught:
+        app_server.build_codex_remote_args(
+            codex_args=args, thread_id=thread_id, remote_url="ws://127.0.0.1:9876"
+        )
+    assert classify_exception(caught.value) == (ErrorCategory.CONFIG, ErrorImpact.BLOCKING)
+    assert "codex --resume" in str(caught.value)
+    assert "conv_saved" not in str(caught.value)
 
 
 @pytest.mark.parametrize(
@@ -699,12 +723,15 @@ def test_build_codex_native_server_rejects_transport_args_before_cli_discovery(
         # ``app-server`` as an option VALUE is not the subcommand — must pass.
         ["--model", "app-server"],
         ["--model=app-server"],
+        ["--model", "resume"],
+        ["--remote-auth-token-env", "resume"],
         ["-c", "model=app-server"],
         # Normal permission presets and config overrides are unaffected.
         ["--sandbox", "read-only", "--ask-for-approval", "on-request"],
         ["--dangerously-bypass-approvals-and-sandbox"],
         # Tokens after the ``--`` prompt separator are left alone.
         ["--", "app-server", "--remote"],
+        ["--", "resume"],
     ],
 )
 def test_reject_reserved_codex_transport_args_allows(allowed_args: list[str]) -> None:

@@ -1034,8 +1034,22 @@ def test_codex_cli_no_pass_through_persists_empty_args(
     assert captured["extra_args"] == ()
 
 
+@pytest.mark.parametrize(
+    ("args", "expected", "conversation"),
+    [
+        (["--flag"], ("--flag",), None),
+        (["-m", "resume"], ("-m", "resume"), None),
+        (["--model", "resume"], (), None),
+        (["--remote-auth-token-env", "resume"], ("--remote-auth-token-env", "resume"), None),
+        (["--", "--", "resume"], ("--", "resume"), None),
+        (["--resume", "conv_saved"], (), "conv_saved"),
+    ],
+)
 def test_codex_args_no_config_is_cli_args_only(
     monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    expected: tuple[str, ...],
+    conversation: str | None,
 ) -> None:
     """With no config args, the result is just the CLI pass-through."""
     captured: dict[str, object] = {}
@@ -1046,10 +1060,11 @@ def test_codex_args_no_config_is_cli_args_only(
         _fake_run_codex_native_capture(captured),
     )
 
-    result = CliRunner().invoke(cli, ["codex", "--flag"])
+    result = CliRunner().invoke(cli, ["codex", *args])
 
     assert result.exit_code == 0, result.output
-    assert captured["extra_args"] == ("--flag",)
+    assert captured["extra_args"] == expected
+    assert captured["session_id"] == conversation
 
 
 @pytest.mark.parametrize(
@@ -1068,14 +1083,17 @@ def test_codex_args_no_config_is_cli_args_only(
         ),
         (["--remote", "ws://127.0.0.1:7101"], "--remote"),
         (["--remote=ws://127.0.0.1:7101"], "--remote"),
+        (["resume", "conv_saved"], "resume"),
+        (["--", "resume", "conv_saved"], "resume"),
+        (["resume", "--last"], "resume"),
     ],
 )
-def test_codex_cli_rejects_runner_owned_transport_args(
+def test_codex_cli_rejects_runner_owned_launch_args(
     monkeypatch: pytest.MonkeyPatch,
     codex_args: list[str],
     reserved: str,
 ) -> None:
-    """Runner-owned Codex transport args fail before a session or backend exists."""
+    """Runner-owned transport and resume selectors fail before session creation."""
     monkeypatch.setattr("omnigent.cli._load_effective_config", dict)
     monkeypatch.setattr(
         "omnigent.cli._ensure_backend",
@@ -1090,6 +1108,8 @@ def test_codex_cli_rejects_runner_owned_transport_args(
 
     assert result.exit_code == 2, result.output
     assert f"'{reserved}' is reserved for Omnigent" in result.output
+    if reserved == "resume":
+        assert "codex --resume" in result.output
 
 
 def test_pi_config_args_form_base_cli_args_append(

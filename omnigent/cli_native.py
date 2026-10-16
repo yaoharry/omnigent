@@ -418,6 +418,16 @@ def register_native_commands(cli: click.Group) -> None:
             )
         _reject_reserved_codex_transport_args(codex_args)
 
+        from omnigent.harnesses.codex_native.launch_args import (
+            CodexResumeArgsError,
+            reject_reserved_codex_resume_args,
+        )
+
+        try:
+            reject_reserved_codex_resume_args(codex_args)
+        except CodexResumeArgsError as exc:
+            raise click.UsageError(str(exc)) from exc
+
         from omnigent.harness_startup_config import resolve_harness_command
         from omnigent.harnesses.codex_native.main import run_codex_native
 

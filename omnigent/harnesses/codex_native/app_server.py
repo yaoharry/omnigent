@@ -58,6 +58,7 @@ from omnigent.harnesses.codex_native.launch_args import (
     codex_workspace_roots,
     materialize_codex_config_profile,
     read_codex_mcp_servers,
+    reject_reserved_codex_resume_args,
     reject_reserved_codex_transport_args,
     validate_codex_config_profile_state,
     without_codex_add_dirs,
@@ -3435,9 +3436,10 @@ def build_codex_native_server(
     :raises ImportError: If no Codex CLI is available.
     :raises OSError: If Databricks routing was requested but no
         credentials can be resolved.
-    :raises ValueError: If launch arguments select the runner-owned transport.
+    :raises ValueError: If launch arguments select the runner-owned transport or resume.
     """
     reject_reserved_codex_transport_args(terminal_launch_args)
+    reject_reserved_codex_resume_args(terminal_launch_args)
     resolved_codex = codex_path or _find_codex_cli()
     if not resolved_codex:
         raise ImportError(
@@ -4855,6 +4857,7 @@ def build_codex_remote_args(
     # below; reject caller pass-through args that would re-select or re-attach
     # that transport (e.g. ``codex app-server … --remote``, which clap rejects).
     reject_reserved_codex_transport_args(codex_args)
+    reject_reserved_codex_resume_args(codex_args)
     if thread_id is not None:
         # Codex submits a positional ahead of ``resume`` as a new prompt to the
         # resumed thread; the persisted launch prompt was meant for the first start.

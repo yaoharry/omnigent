@@ -14,6 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 import tomlkit
 from tomlkit.exceptions import ParseError, TOMLKitError
 
+from omnigent.cli_invocation import cli_invocation
 from omnigent.errors import ErrorCode, OmnigentError
 
 _CODEX_CONFIG_PATHS = (
@@ -130,16 +131,8 @@ _RESERVED_CODEX_TRANSPORT_TOKENS = frozenset(
 )
 
 
-def reserved_codex_transport_arg(args: Sequence[str]) -> str | None:
-    """Return the first pass-through Codex arg that selects or attaches the runner-owned transport.
-
-    Scoped to Codex (the runner owns ``app-server``/``--listen``/``--remote``);
-    option *values* are never flagged (``--model app-server`` passes), and tokens
-    after a ``--`` prompt separator are left alone.
-
-    :param args: Caller pass-through Codex CLI args (``terminal_launch_args``).
-    :returns: The reserved token, e.g. ``"app-server"``, or ``None``.
-    """
+def _reserved_codex_arg(args: Sequence[str], reserved_tokens: frozenset[str]) -> str | None:
+    """Find a reserved token outside option values and the prompt separator."""
     index = 0
     while index < len(args):
         arg = args[index]
@@ -150,10 +143,33 @@ def reserved_codex_transport_arg(args: Sequence[str]) -> str | None:
             index += 1 if "=" in arg else 2
             continue
         token = arg.split("=", 1)[0]
-        if token in _RESERVED_CODEX_TRANSPORT_TOKENS:
+        if token in reserved_tokens:
             return token
         index += 1
     return None
+
+
+def reserved_codex_transport_arg(args: Sequence[str]) -> str | None:
+    """Find runner-owned transport flags, preserving option values and prompts."""
+    return _reserved_codex_arg(args, _RESERVED_CODEX_TRANSPORT_TOKENS)
+
+
+class CodexResumeArgsError(OmnigentError, ValueError):
+    """Native resume selection conflicts with the Omnigent session mapping."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "'resume' is reserved for Omnigent session selection. Use "
+            f"`{cli_invocation()} codex --resume [CONVERSATION]` to reopen an "
+            "Omnigent session, or run `codex resume` directly for a native Codex session.",
+            code=ErrorCode.HARNESS_NOT_CONFIGURED,
+        )
+
+
+def reject_reserved_codex_resume_args(args: Sequence[str]) -> None:
+    """Keep native resume selectors out of the runner-owned Codex attach."""
+    if _reserved_codex_arg(args, frozenset({"resume"})) is not None:
+        raise CodexResumeArgsError()
 
 
 class CodexTransportArgsError(OmnigentError, ValueError):
