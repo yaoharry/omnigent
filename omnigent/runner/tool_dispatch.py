@@ -1824,6 +1824,23 @@ async def _inherited_parent_model(
             extra={"session_id": runner_primary_session_id()},
         )
         return None
+    responses_gap = await asyncio.to_thread(
+        _codex_responses_gap,
+        sub_agent_name=sub_agent_name,
+        agent_spec=agent_spec,
+        harness=child_harness,
+        model=parent_model,
+    )
+    if responses_gap is not None:
+        _logger.info(
+            "sys_session_send: not inheriting parent model %r for sub-agent %r (%s); "
+            "child runs its default",
+            parent_model,
+            sub_agent_name,
+            responses_gap,
+            extra={"session_id": runner_primary_session_id()},
+        )
+        return None
     return parent_model
 
 
@@ -2268,6 +2285,70 @@ def _dispatch_model_mismatch(harness: str, model: str) -> str | None:
             return str(exc)
         return None
     return model_family_mismatch(harness, model)
+
+
+def _codex_responses_gap(
+    *,
+    sub_agent_name: str,
+    agent_spec: AgentSpec | None,
+    harness: str | None,
+    model: str,
+) -> str | None:
+    """
+    Explain why a Codex child cannot run *model*, or return ``None``.
+
+    Codex speaks only the Responses API, and the Databricks gateway lists the
+    API types each endpoint serves. Only that listing counts as proof: an
+    unlisted model, an endpoint without API types, a bound harness, or a
+    failed listing all allow the dispatch, which then fails as before.
+
+    :param sub_agent_name: Name of the sub-agent being dispatched.
+    :param agent_spec: Parent agent's spec.
+    :param harness: The child's resolved harness, e.g. ``"codex-native"``.
+    :param model: The id the child would launch with, e.g.
+        ``"databricks-kimi-k3-neo"``.
+    :returns: A rejection reason naming Responses-capable alternatives, or
+        ``None`` when the gateway does not prove the model unusable.
+    """
+    from omnigent.harness_availability import CODEX_CANONICAL_HARNESSES
+    from omnigent.inference_config import binding_for_harness, load_runtime_inference_config
+    from omnigent.models.codex_model_vocabulary import comparable_model_id
+    from omnigent.models.model_catalog import list_models_for_worker
+    from omnigent.models.model_metadata import ModelWireAPI
+
+    if harness is None or canonicalize_harness(harness) not in CODEX_CANONICAL_HARNESSES:
+        return None
+    if binding_for_harness(load_runtime_inference_config(), harness) is not None:
+        return None
+    sub_spec = _find_subagent_spec(sub_agent_name, agent_spec)
+    if sub_spec is None:
+        return None
+    try:
+        listing = list_models_for_worker(sub_spec, harness)
+    except Exception:  # noqa: BLE001 — a listing outage must not block a dispatch
+        _logger.debug("codex responses check: model listing failed", exc_info=True)
+        return None
+    if listing.source != "gateway" or not listing.verified:
+        return None
+    wanted = comparable_model_id(model)
+    entry = next((m for m in listing.models if comparable_model_id(m.id) == wanted), None)
+    if (
+        entry is None
+        or not entry.metadata.wire_apis
+        or ModelWireAPI.OPENAI_RESPONSES in entry.metadata.wire_apis
+    ):
+        return None
+    alternatives = [
+        m.id for m in listing.models if ModelWireAPI.OPENAI_RESPONSES in m.metadata.wire_apis
+    ][:3]
+    suggestion = (
+        f" Responses-capable models include {', '.join(alternatives)}." if alternatives else ""
+    )
+    return (
+        f"the gateway serves {entry.id!r} without a Responses API, which Codex requires."
+        f"{suggestion} Pick another model (see sys_list_models), or dispatch to a worker "
+        "whose harness accepts chat-completions models."
+    )
 
 
 def _harness_has_inference_binding(harness: str) -> bool:
@@ -2833,12 +2914,25 @@ async def _execute_subagent_tool(
             # quotes what the caller sent), then mechanical
             # canonical<->gateway-local normalization. The normalized
             # id is what the server persists as model_override.
-            create_body["model_override"] = _normalize_subagent_model(
+            normalized_model = _normalize_subagent_model(
                 model,
                 sub_agent_name=str(sub_agent_name),
                 agent_spec=agent_spec,
                 harness=child_harness,
             )
+            responses_gap = await asyncio.to_thread(
+                _codex_responses_gap,
+                sub_agent_name=str(sub_agent_name),
+                agent_spec=agent_spec,
+                harness=child_harness,
+                model=normalized_model,
+            )
+            if responses_gap is not None:
+                return (
+                    f"Error: sys_session_send 'model' rejected for sub-agent "
+                    f"{sub_agent_name!r}: {responses_gap}"
+                )
+            create_body["model_override"] = normalized_model
         else:
             # No explicit per-dispatch model: inherit the parent session's
             # selection so the user's chosen model governs the whole session

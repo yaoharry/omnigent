@@ -1531,6 +1531,36 @@ def _is_llm_endpoint(name: str, task: str) -> bool:
     return any(token in name_lower for token in _LLM_NAME_TOKENS)
 
 
+def _serving_endpoint_wire_apis(endpoint: _JsonObject) -> frozenset[ModelWireAPI]:
+    """Read the wire protocols a serving endpoint's foundation model lists.
+
+    Codex's gateway surface (``codex/v1/responses``) speaks the Responses
+    protocol, so it counts as Responses support alongside
+    ``openai/v1/responses``; ``mlflow/v1/responses`` is a different shape and
+    does not.
+
+    :param endpoint: One ``serving-endpoints`` listing entry.
+    :returns: The listed wire protocols, or an empty set (unknown) when the
+        endpoint lists no API types.
+    """
+    config = endpoint.get("config")
+    entities = config.get("served_entities") if isinstance(config, dict) else None
+    api_types: set[str] = set()
+    for entity in entities if isinstance(entities, list) else []:
+        foundation = entity.get("foundation_model") if isinstance(entity, dict) else None
+        raw = foundation.get("api_types") if isinstance(foundation, dict) else None
+        if isinstance(raw, list):
+            api_types.update(value.lower() for value in raw if isinstance(value, str))
+    wire_apis: set[ModelWireAPI] = set()
+    if any("chat/completions" in api_type for api_type in api_types):
+        wire_apis.add(ModelWireAPI.OPENAI_CHAT)
+    if api_types & {"openai/v1/responses", "codex/v1/responses"}:
+        wire_apis.add(ModelWireAPI.OPENAI_RESPONSES)
+    if any("anthropic" in api_type and "messages" in api_type for api_type in api_types):
+        wire_apis.add(ModelWireAPI.ANTHROPIC_MESSAGES)
+    return frozenset(wire_apis)
+
+
 def _fetch_databricks_listing(
     provider: ResolvedModelProvider,
     *,
@@ -1569,7 +1599,13 @@ def _fetch_databricks_listing(
         # state field stays included (the API may omit it).
         if isinstance(ready, str) and ready and ready.upper() != "READY":
             continue
-        models.append(ModelEntry(id=name, family=model_family_token(name)))
+        models.append(
+            ModelEntry(
+                id=name,
+                family=model_family_token(name),
+                metadata=ModelMetadata(wire_apis=_serving_endpoint_wire_apis(endpoint)),
+            )
+        )
     return ModelListing(
         source="gateway",
         verified=True,

@@ -253,6 +253,47 @@ async def test_family_mismatch_blocks_inheritance_quietly(
 
 
 @pytest.mark.asyncio
+async def test_chat_only_parent_model_blocks_codex_inheritance_quietly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    A codex worker does not inherit a model the gateway serves without the
+    Responses API; the dispatch still succeeds on the worker's default.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    from omnigent.models import model_catalog
+    from omnigent.models.model_metadata import ModelMetadata, ModelWireAPI
+
+    _stub_worker_launchable(monkeypatch)
+    chat_only = model_catalog.ModelEntry(
+        id="databricks-kimi-k3-neo",
+        family="other",
+        metadata=ModelMetadata(wire_apis=frozenset({ModelWireAPI.OPENAI_CHAT})),
+    )
+    monkeypatch.setattr(
+        model_catalog,
+        "list_models_for_worker",
+        lambda _spec, _harness, **_kwargs: model_catalog.ModelListing(
+            source="gateway", verified=True, models=(chat_only,), note="test gateway"
+        ),
+    )
+    bodies = await _dispatch_without_model(
+        monkeypatch,
+        agent_spec=_spec_with_worker("codex-native"),
+        conv_id="conv_parent_chat_only",
+        parent_snapshot={
+            "id": "conv_parent_chat_only",
+            "agent_id": "ag_parent",
+            "harness": "codex-native",
+            "model_override": "databricks-kimi-k3-neo",
+            "llm_model": None,
+        },
+    )
+    assert "model_override" not in bodies[0]
+
+
+@pytest.mark.asyncio
 async def test_unplumbed_harness_blocks_inheritance_quietly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

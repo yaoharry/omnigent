@@ -4071,6 +4071,121 @@ async def test_sys_session_send_model_lands_in_child_create_body(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "wire_apis", "rejected"),
+    [
+        pytest.param("databricks-kimi-k3-neo", {"openai-chat"}, True, id="chat-only"),
+        pytest.param(
+            "databricks-glm-5-2", {"openai-chat", "openai-responses"}, False, id="responses"
+        ),
+        pytest.param("databricks-glm-5-3", set(), False, id="unknown-wires"),
+        pytest.param("databricks-gpt-unlisted", None, False, id="not-in-listing"),
+    ],
+)
+async def test_sys_session_send_rejects_codex_model_without_responses_api(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    wire_apis: set[str] | None,
+    rejected: bool,
+) -> None:
+    """
+    A Codex dispatch onto a gateway model with no Responses API fails at dispatch.
+
+    Codex speaks only the Responses API, so a child launched on a chat-only
+    endpoint fails its first turn at the gateway. Only a listing that names
+    the model's API types proves that; unknown wires or an unlisted model
+    still dispatch.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param model: Model id requested for the codex worker.
+    :param wire_apis: Wire values the gateway lists for *model*, or ``None``
+        when the listing does not include it.
+    :param rejected: Whether the dispatch must be refused.
+    """
+    from omnigent.models import model_catalog
+    from omnigent.models.model_metadata import ModelMetadata, ModelWireAPI
+    from omnigent.runner import app as runner_app
+    from omnigent.runner.tool_dispatch import execute_tool
+
+    entries = [
+        model_catalog.ModelEntry(
+            id="databricks-gpt-5-4",
+            family="openai",
+            metadata=ModelMetadata(
+                wire_apis=frozenset({ModelWireAPI.OPENAI_CHAT, ModelWireAPI.OPENAI_RESPONSES})
+            ),
+        )
+    ]
+    if wire_apis is not None:
+        entries.append(
+            model_catalog.ModelEntry(
+                id=model,
+                family="other",
+                metadata=ModelMetadata(
+                    wire_apis=frozenset(ModelWireAPI(value) for value in wire_apis)
+                ),
+            )
+        )
+    monkeypatch.setattr(
+        model_catalog,
+        "list_models_for_worker",
+        lambda _spec, _harness, **_kwargs: model_catalog.ModelListing(
+            source="gateway", verified=True, models=tuple(entries), note="test gateway"
+        ),
+    )
+    monkeypatch.setattr(runner_app, "get_session_agent_id", lambda _sid: "ag_parent")
+    monkeypatch.setattr(subagent_work, "register_child_session", lambda *a, **k: None)
+    session_inbox: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    create_bodies: list[dict[str, Any]] = []
+
+    async def _server_handler(request: httpx.Request) -> httpx.Response:
+        """Serve fresh-create child lookup, create, and message POSTs."""
+        if (
+            request.method == "GET"
+            and request.url.path == "/v1/sessions/conv_parent_wire/child_sessions"
+        ):
+            return httpx.Response(200, json={"data": []})
+        if request.method == "POST" and request.url.path == "/v1/sessions":
+            create_bodies.append(json.loads(request.content))
+            return httpx.Response(201, json={"id": "conv_child_wire"})
+        if request.method == "POST" and request.url.path == "/v1/sessions/conv_child_wire/events":
+            return httpx.Response(202, json={"queued": True})
+        return httpx.Response(404, json={"error": str(request.url)})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_server_handler),
+        base_url="http://server",
+    ) as server_client:
+        try:
+            output = await execute_tool(
+                tool_name="sys_session_send",
+                arguments=json.dumps(
+                    {
+                        "agent": "worker",
+                        "title": "task",
+                        "args": {"input": "do the task", "model": model},
+                    }
+                ),
+                server_client=server_client,
+                conversation_id="conv_parent_wire",
+                agent_spec=_spec_with_subagent_harness("codex-native"),
+                session_inbox=session_inbox,
+            )
+        finally:
+            subagent_work.unregister_subagent_work("conv_child_wire")
+            subagent_work._session_inboxes_ref.pop("conv_parent_wire", None)
+
+    if rejected:
+        assert output.startswith("Error:"), output
+        assert "without a Responses API" in output
+        assert "databricks-gpt-5-4" in output
+        assert create_bodies == []
+    else:
+        assert json.loads(output)["status"] == "launching"
+        assert [body["model_override"] for body in create_bodies] == [model]
+
+
+@pytest.mark.asyncio
 async def test_sys_session_send_blocks_fresh_dispatch_when_harness_cli_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

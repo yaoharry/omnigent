@@ -832,6 +832,69 @@ def test_databricks_listing_filters_to_llm_wire_surfaces(
     )
 
 
+def test_serving_endpoint_listing_reads_api_types_as_wire_apis(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Serving-endpoint ids carry the wire protocols their models list.
+
+    Codex's gateway surface counts as Responses support, MLflow's responses
+    shape does not, and an endpoint that lists no API types stays unknown.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :param tmp_path: Per-test temp dir.
+    """
+    _isolate_config(monkeypatch, tmp_path, _DATABRICKS_DEFAULT_CONFIG)
+    _stub_workspace_creds(monkeypatch)
+
+    def _endpoint(name: str, api_types: list[str] | None) -> dict[str, object]:
+        foundation: dict[str, object] = {"name": f"system.ai.{name}"}
+        if api_types is not None:
+            foundation["api_types"] = api_types
+        return {
+            "name": name,
+            "task": "llm/v1/chat",
+            "state": {"ready": "READY"},
+            "config": {"served_entities": [{"name": name, "foundation_model": foundation}]},
+        }
+
+    page = {
+        "endpoints": [
+            _endpoint(
+                "databricks-gpt-5-4",
+                ["mlflow/v1/chat/completions", "openai/v1/responses", "codex/v1/responses"],
+            ),
+            _endpoint(
+                "databricks-glm-5-2",
+                ["mlflow/v1/chat/completions", "anthropic/v1/messages", "codex/v1/responses"],
+            ),
+            _endpoint(
+                "databricks-kimi-k3-neo", ["mlflow/v1/chat/completions", "mlflow/v1/responses"]
+            ),
+            _endpoint("databricks-gpt-unlisted", None),
+        ]
+    }
+
+    listing = list_models_for_worker(
+        _worker_spec("codex-native"),
+        "codex-native",
+        transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=page)),
+    )
+
+    wires = {m.id: m.metadata.wire_apis for m in listing.models}
+    assert wires == {
+        "databricks-gpt-5-4": frozenset({ModelWireAPI.OPENAI_CHAT, ModelWireAPI.OPENAI_RESPONSES}),
+        "databricks-glm-5-2": frozenset(
+            {
+                ModelWireAPI.OPENAI_CHAT,
+                ModelWireAPI.OPENAI_RESPONSES,
+                ModelWireAPI.ANTHROPIC_MESSAGES,
+            }
+        ),
+        "databricks-kimi-k3-neo": frozenset({ModelWireAPI.OPENAI_CHAT}),
+        "databricks-gpt-unlisted": frozenset(),
+    }
+
+
 def test_databricks_listing_skips_explicitly_non_ready_endpoints(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

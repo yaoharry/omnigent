@@ -317,8 +317,23 @@ def diagnose_client_update_required(message: str) -> FailureDiagnosis | None:
 
 
 def diagnose_codex_model_rejection(message: str) -> FailureDiagnosis | None:
-    """Explain Codex's explicit refusal of a model on a ChatGPT account."""
-    if "model is not supported when using codex with a chatgpt account" not in message.lower():
+    """Explain a provider's refusal of the selected model for Codex.
+
+    Covers a ChatGPT account refusing a model and a gateway that serves the
+    model without the Responses API Codex speaks.
+    """
+    lowered = message.lower()
+    if _RESPONSES_API_UNSUPPORTED_MARKER in lowered:
+        return FailureDiagnosis(
+            title="Model unavailable on Codex",
+            cause=message.strip(),
+            remediation=(
+                "Codex needs a model the gateway serves through the Responses API. Choose "
+                "another model with the model picker or /model, or run this task on a "
+                "harness that accepts chat-completions models."
+            ),
+        )
+    if "model is not supported when using codex with a chatgpt account" not in lowered:
         return None
     return FailureDiagnosis(
         title="Model unavailable with ChatGPT login",
@@ -335,6 +350,8 @@ def diagnose_codex_model_rejection(message: str) -> FailureDiagnosis | None:
 # rate-limit, and budget failures keep their own handling.
 # Claude Code: "There's an issue with the selected model (<id>). It may not exist..."
 _MODEL_UNAVAILABLE_MARKER = "issue with the selected model"
+# Databricks gateway: "Responses API passthrough is not supported for model <id>".
+_RESPONSES_API_UNSUPPORTED_MARKER = "responses api passthrough is not supported"
 # Anthropic's not-found body for an unknown model id, as a harness forwards it:
 # `404 {"type":"error","error":{"type":"not_found_error","message":"model: <id>"}}`.
 _ANTHROPIC_MODEL_NOT_FOUND = re.compile(r'"message"\s*:\s*"model:\s*[^"\s]+"', re.IGNORECASE)
@@ -349,7 +366,8 @@ _OPENAI_MODEL_NOT_FOUND = re.compile(
 
 
 def _is_model_unavailable(message: str) -> bool:
-    if _MODEL_UNAVAILABLE_MARKER in message.lower():
+    lowered = message.lower()
+    if _MODEL_UNAVAILABLE_MARKER in lowered or _RESPONSES_API_UNSUPPORTED_MARKER in lowered:
         return True
     if _OPENAI_MODEL_NOT_FOUND.search(message):
         return True

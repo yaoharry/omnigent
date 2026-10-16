@@ -455,6 +455,30 @@ def test_codex_model_rejection_ignores_unrelated_errors(message: str) -> None:
 @pytest.mark.parametrize(
     "message",
     [
+        "Responses API passthrough is not supported for model databricks-glm-5-2",
+        '{"error_code":"BAD_REQUEST","message":"Responses API passthrough is not supported '
+        'for model databricks-kimi-k3-neo"}',
+    ],
+)
+def test_codex_model_rejection_explains_a_model_without_responses_api(message: str) -> None:
+    diagnosis = diagnose_codex_model_rejection(message)
+
+    assert diagnosis is not None
+    assert diagnosis.title == "Model unavailable on Codex"
+    assert diagnosis.cause == message
+    assert diagnosis.remediation is not None
+    assert "Responses API" in diagnosis.remediation
+    assert "model picker or /model" in diagnosis.remediation
+    assert diagnosis.category is ErrorCategory.CONFIG
+    # Harnesses that forward the text bare get the shared model-unavailable card.
+    shared = diagnose_model_unavailable(message)
+    assert shared is not None
+    assert shared.title == "Model unavailable"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
         "There's an issue with the selected model (anthropic/claude-opus-4-8). "
         "It may not exist or you may not have access to it.",
         "inner executor error: There's an issue with the selected model "
