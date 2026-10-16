@@ -14,11 +14,32 @@ import pytest
 from omnigent.models.model_override import (
     MODEL_OVERRIDE_MAX_LEN,
     canonical_model_spelling,
+    codex_reasoning_blocks_switch,
     harness_supports_model_override,
     model_family_mismatch,
     normalize_model_for_provider,
     validate_model_override,
 )
+
+
+@pytest.mark.parametrize(
+    ("current", "target", "blocked"),
+    [
+        # GLM/Kimi reasoning items carry content a GPT model rejects.
+        ("system.ai.kimi-k3", "gpt-5.6-terra", True),
+        ("databricks-glm-5-2", "databricks-gpt-5-5", True),
+        ("kimi-k2-instruct", "gpt-5-codex", True),
+        # Every other direction keeps working.
+        ("gpt-5.6-sol", "gpt-5.6-terra", False),
+        ("gpt-5.6-terra", "system.ai.kimi-k3", False),
+        ("system.ai.kimi-k3", "databricks-glm-5-2", False),
+        # Not a codex-compatible id at all: nothing is known about its reasoning.
+        ("databricks-claude-opus-4-8", "gpt-5.5", False),
+    ],
+)
+def test_codex_reasoning_blocks_switch(current: str, target: str, blocked: bool) -> None:
+    """Only a GLM/Kimi thread moving onto a GPT/codex model is refused."""
+    assert codex_reasoning_blocks_switch(current, target) is blocked
 
 
 @pytest.mark.parametrize(

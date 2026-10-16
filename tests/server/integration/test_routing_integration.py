@@ -1774,6 +1774,124 @@ async def test_turn_candidates_come_from_the_panes_own_vocabulary(
     ]
 
 
+KIMI_MODEL = "system.ai.kimi-k3"
+
+
+async def _codex_native_child_pane(
+    client: httpx.AsyncClient,
+    db_uri: str,
+    *,
+    agent_name: str,
+) -> tuple[Any, SqlAlchemyConversationStore]:
+    """A codex-native sub-agent pane under a pinned codex Smart Routing parent.
+
+    :param client: Test HTTP client.
+    :param db_uri: Database URI for a direct store handle.
+    :param agent_name: Agent name to register.
+    :returns: The child conversation row and the store it lives in.
+    """
+    from omnigent.harness_plugins import CODEX_NATIVE_CODING_AGENT
+
+    agent = await create_test_agent(
+        client,
+        name=agent_name,
+        executor={"type": "omnigent", "config": {"harness": "codex"}},
+    )
+    child_agent = await create_test_agent(
+        client,
+        name=f"{agent_name}-codex-pane",
+        executor={"type": "omnigent", "config": {"harness": "codex-native"}},
+    )
+    parent = await client.post(
+        "/v1/sessions",
+        json={"agent_id": agent["id"], "cost_control_mode_override": "on"},
+    )
+    assert parent.status_code == 201, parent.text
+    conv_store = SqlAlchemyConversationStore(db_uri)
+    child = conv_store.create_conversation(
+        kind="sub_agent",
+        title="codex-native-ui:audit auth",
+        parent_conversation_id=str(parent.json()["id"]),
+        agent_id=child_agent["id"],
+    )
+    conv_store.set_labels(
+        child.id,
+        {
+            "omnigent.ui": "terminal",
+            "omnigent.wrapper": CODEX_NATIVE_CODING_AGENT.wrapper_label,
+        },
+    )
+    refreshed = conv_store.get_conversation(child.id)
+    assert refreshed is not None
+    return refreshed, conv_store
+
+
+async def test_a_codex_thread_on_kimi_is_not_switched_onto_a_gpt_model(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """A child routes per spawn, but its live Codex thread cannot leave Kimi for GPT.
+
+    The thread replays its Kimi reasoning items on the next request, and a GPT
+    model rejects their ``content`` — every later turn of the child failed.
+    The pick is recorded as not applied and the pane stays on Kimi.
+    """
+    child, conv_store = await _codex_native_child_pane(
+        client, db_uri, agent_name="routing-codex-kimi-thread"
+    )
+    first, first_forwards = await _dispatch_native_turn(child, conv_store, model=KIMI_MODEL)
+    assert first.applied is True
+    on_kimi = conv_store.get_conversation(child.id)
+    assert on_kimi is not None
+    assert on_kimi.model_override == KIMI_MODEL
+    assert [f.get("model_override") for f in first_forwards] == [KIMI_MODEL]
+
+    second, second_forwards = await _dispatch_native_turn(on_kimi, conv_store, model=GPT_MODEL)
+
+    assert second.model == GPT_MODEL
+    assert second.applied is False
+    assert "Codex thread" in second.rationale
+    assert "deep refactor" in second.rationale
+    refreshed = conv_store.get_conversation(child.id)
+    assert refreshed is not None
+    assert refreshed.model_override == KIMI_MODEL
+    # Nothing is carried in-band, so the executor never switches the thread.
+    assert [f.get("model_override") for f in second_forwards] == [None]
+
+
+@pytest.mark.parametrize(
+    ("label", "first_model", "second_model"),
+    [
+        ("gpt-gpt", GPT_MODEL, "databricks-gpt-5-6-sol"),
+        ("gpt-kimi", GPT_MODEL, KIMI_MODEL),
+        ("kimi-glm", KIMI_MODEL, GLM_MODEL),
+    ],
+)
+async def test_a_codex_thread_still_switches_where_its_history_carries_over(
+    client: httpx.AsyncClient,
+    db_uri: str,
+    label: str,
+    first_model: str,
+    second_model: str,
+) -> None:
+    """GPT-to-GPT, GPT-to-Kimi and Kimi-to-GLM switches stay applied."""
+    child, conv_store = await _codex_native_child_pane(
+        client, db_uri, agent_name=f"routing-codex-switch-{label}"
+    )
+    first, _ = await _dispatch_native_turn(child, conv_store, model=first_model)
+    assert first.applied is True
+    pinned = conv_store.get_conversation(child.id)
+    assert pinned is not None
+
+    second, second_forwards = await _dispatch_native_turn(pinned, conv_store, model=second_model)
+
+    assert second.applied is True
+    refreshed = conv_store.get_conversation(child.id)
+    assert refreshed is not None
+    assert refreshed.model_override == second_model
+    assert [f.get("model_override") for f in second_forwards] == [second_model]
+
+
 # ── 10. A routed child's harness is chosen once, not per message ─────
 
 

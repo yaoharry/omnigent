@@ -70,6 +70,7 @@ from omnigent.host.frames import (
 from omnigent.llms.context_window import resolve_effective_context_window
 from omnigent.mcp_selection import mcp_selection_revision
 from omnigent.models.model_metadata import concrete_reported_model
+from omnigent.models.model_override import codex_reasoning_blocks_switch
 from omnigent.native.failure_telemetry import (
     FailureContext,
     normalize_failure_context,
@@ -6277,21 +6278,47 @@ def _routed_turn_model_spelling(
     return spelling
 
 
-def _unapplied_routed_verdict(model: str, verdict: dict[str, Any]) -> dict[str, Any]:
+def _unapplied_routed_verdict(
+    model: str, verdict: dict[str, Any], *, note: str | None = None
+) -> dict[str, Any]:
     """
     Record on a verdict that the terminal cannot switch to *model*.
 
-    :param model: The routed model id the pane has no spelling for.
+    :param model: The routed model id the pane did not switch to.
     :param verdict: Router verdict about to be recorded as a chip.
+    :param note: Why the switch was skipped; defaults to the pane having no
+        spelling for *model*.
     :returns: The verdict with ``applied`` cleared and the reason noted.
     """
     rationale = verdict.get("rationale")
-    note = f"Not applied: this Claude terminal cannot switch to {model}."
+    if note is None:
+        note = f"Not applied: this Claude terminal cannot switch to {model}."
     return {
         **verdict,
         "applied": False,
         "rationale": f"{rationale} {note}" if isinstance(rationale, str) and rationale else note,
     }
+
+
+def _codex_reasoning_hold(harness: str | None, conv: Conversation, model: str) -> str | None:
+    """
+    Name the model a live codex-native thread must stay on instead of *model*.
+
+    See :func:`omnigent.models.model_override.codex_reasoning_blocks_switch`.
+    Both the pane's reported model and the pinned pick are checked, because
+    either can lag the other by a turn.
+
+    :param harness: The pane's native harness, e.g. ``"codex-native"``.
+    :param conv: Conversation row, read for its reported and pinned models.
+    :param model: The routed model a switch would move the thread to.
+    :returns: The thread's GLM/Kimi model, or ``None`` when the switch is safe.
+    """
+    if harness != "codex-native":
+        return None
+    for current in (conv.reported_model, conv.model_override):
+        if current and codex_reasoning_blocks_switch(current, model):
+            return current
+    return None
 
 
 #: Placeholder model on a decision card for a routing call that never answered.
@@ -7639,6 +7666,8 @@ async def _dispatch_session_event_to_runner_impl(
         # pane cannot take must not become ``model_override``, which would
         # disable routing for every later turn and misattribute usage.
         _native_applied_model: str | None = None
+        # Why a pick the pane could take was still not applied, for its chip.
+        _native_unapplied_note: str | None = None
         if _native_routing_enabled and (
             conv.model_override is None or conv.parent_conversation_id is not None
         ):
@@ -7695,11 +7724,34 @@ async def _dispatch_session_event_to_runner_impl(
                     # On a pane's first routed turn the launch env carries the
                     # id, so no spelling exists to require.
                     _native_pane_routed_before = ROUTING_DECISION_LABEL_KEY in conv.labels
+                    _native_pane_up = _native_scope == "turn" or _native_pane_routed_before
                     _native_applied_model = (
                         _routed_turn_model_spelling(session_id, conv, _native_routed_model)
-                        if _native_scope == "turn" or _native_pane_routed_before
+                        if _native_pane_up
                         else _native_routed_model
                     )
+                    # A switch inside a live Codex thread replays its history to
+                    # the new model; a GPT model rejects GLM/Kimi reasoning in it.
+                    _native_thread_model = (
+                        _codex_reasoning_hold(_harness, conv, _native_routed_model)
+                        if _native_pane_up
+                        else None
+                    )
+                    if _native_applied_model is not None and _native_thread_model is not None:
+                        _logger.info(
+                            "smart_routing: keeping native session=%s on %s; its Codex "
+                            "thread cannot continue on %s",
+                            session_id,
+                            _native_thread_model,
+                            _native_routed_model,
+                            extra={"session_id": session_id},
+                        )
+                        _native_applied_model = None
+                        _native_unapplied_note = (
+                            f"Not applied: this Codex thread holds {_native_thread_model} "
+                            f"reasoning, which {_native_routed_model} rejects, so it stays "
+                            f"on {_native_thread_model}."
+                        )
                 if _native_applied_model is not None:
                     try:
                         await asyncio.to_thread(
@@ -7770,7 +7822,9 @@ async def _dispatch_session_event_to_runner_impl(
         # (echoed back by the CLI) before the chip.
         if _native_routed_model is not None and _native_verdict is not None:
             if _native_applied_model is None and not _native_route_failed:
-                _native_verdict = _unapplied_routed_verdict(_native_routed_model, _native_verdict)
+                _native_verdict = _unapplied_routed_verdict(
+                    _native_routed_model, _native_verdict, note=_native_unapplied_note
+                )
             _native_decision_id = await _emit_server_routing_decision(
                 session_id,
                 conversation_store,

@@ -148,6 +148,32 @@ def is_codex_compatible_model(model: str) -> bool:
     )
 
 
+def codex_reasoning_blocks_switch(current_model: str, target_model: str) -> bool:
+    """
+    Report whether a live Codex thread on *current_model* cannot move to *target_model*.
+
+    A Codex thread replays its earlier reasoning items on every request. GLM
+    and Kimi reasoning items carry ``content``, which OpenAI's Responses API
+    rejects ("Expected an array with maximum length 0"), so once a thread has
+    run on one of those models, every request after a switch to a GPT/codex
+    model fails.
+
+    :param current_model: Model the thread runs on, e.g. ``"system.ai.kimi-k3"``.
+    :param target_model: Model a switch would move it to, e.g. ``"gpt-5.6-terra"``.
+    :returns: ``True`` when *current_model* is a GLM/Kimi model and
+        *target_model* a GPT/codex one.
+    """
+
+    def _openai(model: str) -> bool:
+        return any(token in model.lower() for token in _CODEX_SUBSTRING_TOKENS)
+
+    return (
+        is_codex_compatible_model(current_model)
+        and not _openai(current_model)
+        and _openai(target_model)
+    )
+
+
 def model_family_mismatch(harness: str, model: str) -> str | None:
     """
     Return a rejection reason when *model*'s family cannot run on *harness*.
