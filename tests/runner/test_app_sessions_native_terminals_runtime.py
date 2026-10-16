@@ -4914,17 +4914,36 @@ async def test_auto_create_codex_terminal_default_pin_requires_a_fresh_catalog(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chatgpt_login", "override", "spec_model", "expected_model"),
+    [
+        pytest.param(
+            False, "databricks-gpt-5-6-sol", None, "databricks-gpt-5-6-sol", id="gateway"
+        ),
+        pytest.param(True, "system.ai.gpt-6-astra", None, "gpt-6-astra", id="chatgpt-pick"),
+        pytest.param(True, None, "system.ai.gpt-6-astra", "gpt-6-astra", id="chatgpt-spec"),
+        pytest.param(True, None, "system.ai.glm-5-2", "gpt-5.6-sol", id="chatgpt-unserved"),
+    ],
+)
 async def test_auto_create_codex_terminal_accepts_gateway_spelled_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    chatgpt_login: bool,
+    override: str | None,
+    spec_model: str | None,
+    expected_model: str,
 ) -> None:
     """
-    A persisted override in the gateway spelling still resolves the catalog.
+    A persisted model in the gateway spelling still resolves the catalog.
 
     The override is stored as the servable id ``databricks-gpt-5-6-sol`` while
     the catalog lists codex's own slug ``gpt-5.6-sol``. The launch translates
     between the two, so the pre-launch check must match by codex's vocabulary,
     not string equality — a raw membership test refuses a model this host serves.
+
+    A ChatGPT login refuses Databricks ids on every turn, so there the launch
+    pins the catalog's slug for the same model, or the catalog default for a
+    model OpenAI doesn't serve.
     """
     import omnigent.harnesses.codex_native.app_server as codex_app_mod
     from omnigent.models import model_catalog_store
@@ -4933,18 +4952,26 @@ async def test_auto_create_codex_terminal_accepts_gateway_spelled_override(
 
     session_id = "5b0c7e2a9d1f4c3b8e6a7d5f4c3b2a1e"
     thread_id = "019e96aa-0be2-7343-8d3b-6f914d60937f"
-    override = "databricks-gpt-5-6-sol"
     monkeypatch.setattr(codex_native_bridge, "_BRIDGE_ROOT", tmp_path / "codex-bridge")
     monkeypatch.setenv("OMNIGENT_RUNNER_WORKSPACE", str(tmp_path / "workspace"))
     monkeypatch.setenv("RUNNER_SERVER_URL", "http://ap.example")
     monkeypatch.delenv("DATABRICKS_CONFIG_PROFILE", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.setattr("omnigent.runner._entry._make_auth_token_factory", lambda: None)
+    source_codex_home = tmp_path / "source-codex-home"
+    source_codex_home.mkdir()
+    if chatgpt_login:
+        (source_codex_home / "auth.json").write_text(
+            json.dumps({"tokens": {"access_token": "test-access-token"}}), encoding="utf-8"
+        )
+    monkeypatch.setenv("CODEX_HOME", str(source_codex_home))
+    launch_overrides = ['model_provider="openai"'] if chatgpt_login else []
 
     monkeypatch.setattr(
         codex_app_mod,
         "resolve_native_codex_launch",
         lambda *, model, spec=None, terminal_launch_args=(): codex_app_mod.NativeCodexLaunch(
-            config_overrides=[], model=model, profile=None
+            config_overrides=list(launch_overrides), model=model, profile=None
         ),
     )
     monkeypatch.setattr(codex_app_mod, "codex_launch_catalog", REAL_CODEX_LAUNCH_CATALOG)
@@ -4962,11 +4989,14 @@ async def test_auto_create_codex_terminal_accepts_gateway_spelled_override(
     fingerprint = codex_app_mod.codex_catalog_fingerprint(
         codex_app_mod.resolve_native_codex_launch(model=None)
     )
-    # A fresh catalog carrying codex's own slug, not the gateway spelling.
+    # A fresh catalog carrying codex's own slugs, not the gateway spelling.
     model_catalog_store.write_catalog(
         "codex-native",
         fingerprint,
-        [{"id": "gpt-5.6-sol", "model": "gpt-5.6-sol", "isDefault": True}],
+        [
+            {"id": "gpt-5.6-sol", "model": "gpt-5.6-sol", "isDefault": True},
+            {"id": "gpt-6-astra", "model": "gpt-6-astra"},
+        ],
     )
 
     class _SnapshotServerClient:
@@ -5105,7 +5135,9 @@ async def test_auto_create_codex_terminal_accepts_gateway_spelled_override(
     agent_spec = AgentSpec(
         spec_version=1,
         name="codex",
-        executor=ExecutorSpec(type="omnigent", config={"harness": "codex-native"}),
+        executor=ExecutorSpec(
+            type="omnigent", model=spec_model, config={"harness": "codex-native"}
+        ),
     )
     try:
         await _auto_create_codex_terminal(
@@ -5119,10 +5151,10 @@ async def test_auto_create_codex_terminal_accepts_gateway_spelled_override(
     finally:
         runner_app_mod._AUTO_CODEX_APP_SERVERS.pop(session_id, None)
 
-    # The gateway-spelled override was accepted (not refused) and passed
-    # through to the launch, which translates it to codex's slug downstream.
+    # The gateway-spelled model was accepted (not refused). A gateway launch
+    # passes it through; a ChatGPT login launches a model it can serve.
     assert build_calls, "a servable override was refused as unknown"
-    assert build_calls[0]["model"] == override
+    assert build_calls[0]["model"] == expected_model
 
 
 @pytest.mark.asyncio

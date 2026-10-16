@@ -3638,6 +3638,67 @@ def native_codex_launch_base_url(launch: NativeCodexLaunch) -> str | None:
     return _config_default_provider_base_url()
 
 
+_OPENAI_PROVIDER_OVERRIDE = 'model_provider="openai"'
+
+
+def native_codex_launch_uses_chatgpt_login(launch: NativeCodexLaunch) -> bool:
+    """Whether a launch runs on Codex's own ChatGPT login.
+
+    That backend serves only OpenAI's model ids, so a Databricks id such as
+    ``system.ai.gpt-6-astra`` is refused on every turn.
+
+    :param launch: Resolved native-Codex launch.
+    :returns: ``True`` when the launch pins Codex's built-in ``openai``
+        provider, nothing redirects its base URL, and the stored Codex login
+        is a ChatGPT account.
+    """
+    from omnigent.inner.codex_executor import _codex_home_config_source_from_env
+    from omnigent.onboarding.ambient import codex_auth_effective_mode
+
+    if launch.profile is not None or _OPENAI_PROVIDER_OVERRIDE not in launch.config_overrides:
+        return False
+    if os.environ.get("OPENAI_BASE_URL") or native_codex_launch_base_url(launch) is not None:
+        return False
+    auth_path = _codex_home_config_source_from_env() / "auth.json"
+    return codex_auth_effective_mode(auth_path) == "chatgpt"
+
+
+def chatgpt_login_launch_model(model: str, catalog: list[_JsonObject] | None) -> str:
+    """Spell *model* so a Codex launch on a ChatGPT login can run it.
+
+    A Databricks id becomes the catalog's row for the same model, else codex's
+    own slug for it (``system.ai.gpt-6-astra`` → ``gpt-6-astra``). A model
+    OpenAI doesn't serve falls back to the catalog default, or to
+    :data:`CODEX_DEFAULT_MODEL` without a catalog.
+
+    :param model: Model the launch pins, e.g. ``"system.ai.gpt-6-astra"``.
+    :param catalog: Fresh ``model/list`` rows for the launch shape, or ``None``.
+    :returns: The model to pin; *model* itself when it isn't a Databricks id.
+    """
+    from omnigent.models.codex_model_vocabulary import (
+        codex_reachable_model_slug,
+        codex_spawn_model,
+        is_databricks_model_id,
+    )
+    from omnigent.models.model_catalog_store import default_row
+
+    if not is_databricks_model_id(model):
+        return model
+    if catalog:
+        # An extended-catalog row keeps its gateway id, which this login still refuses.
+        listed = codex_reachable_model_slug(model, catalog)
+        if listed is not None and not is_databricks_model_id(listed):
+            return listed
+        row = default_row(catalog)
+        default_id = str(row.get("id") or row.get("model") or "") if row is not None else ""
+        if default_id and not is_databricks_model_id(default_id):
+            return default_id
+    slug = codex_spawn_model(model)
+    if slug is not None and not is_databricks_model_id(slug):
+        return slug
+    return CODEX_DEFAULT_MODEL
+
+
 def _config_default_provider_base_url() -> str | None:
     """Base URL Codex's config.toml top-level ``model_provider`` default routes to.
 

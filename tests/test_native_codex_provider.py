@@ -10,6 +10,7 @@ parser; config + ambient are isolated so resolution is deterministic.
 
 from __future__ import annotations
 
+import json
 import shlex
 import sys
 from pathlib import Path
@@ -20,11 +21,15 @@ import yaml
 
 from omnigent.errors import OmnigentError
 from omnigent.harnesses.codex_native.app_server import (
+    NativeCodexLaunch,
     build_codex_native_server,
+    chatgpt_login_launch_model,
     codex_session_meta_model_provider,
+    native_codex_launch_uses_chatgpt_login,
     resolve_native_codex_launch,
 )
 from omnigent.inner.codex_executor import _provider_codex_config_overrides
+from omnigent.models.model_fallbacks import CODEX_DEFAULT_MODEL
 from omnigent.spec.types import AgentSpec, ApiKeyAuth, ExecutorSpec, ProviderAuth
 
 
@@ -1085,3 +1090,95 @@ def test_global_api_key_routes_without_model_or_cli_login(
     assert "model" not in config
     assert launch.model is None
     assert launch.login_required is False
+
+
+_OPENAI_LOGIN_LAUNCH = NativeCodexLaunch(
+    config_overrides=['model_provider="openai"'], model=None, profile=None
+)
+
+
+@pytest.mark.parametrize(
+    ("auth", "launch", "openai_base_url", "expected"),
+    [
+        pytest.param(
+            {"tokens": {"access_token": "test-access-token"}},
+            _OPENAI_LOGIN_LAUNCH,
+            None,
+            True,
+            id="chatgpt-login",
+        ),
+        pytest.param(
+            {"OPENAI_API_KEY": "sk-codex-login"}, _OPENAI_LOGIN_LAUNCH, None, False, id="api-key"
+        ),
+        pytest.param(
+            {"tokens": {"access_token": "test-access-token"}},
+            _OPENAI_LOGIN_LAUNCH,
+            "https://gateway.example/v1",
+            False,
+            id="redirected-base-url",
+        ),
+        pytest.param(
+            {"tokens": {"access_token": "test-access-token"}},
+            NativeCodexLaunch(config_overrides=[], model=None, profile=None),
+            None,
+            False,
+            id="config-default-provider",
+        ),
+        pytest.param(
+            {"tokens": {"access_token": "test-access-token"}},
+            NativeCodexLaunch(config_overrides=[], model=None, profile="DEFAULT"),
+            None,
+            False,
+            id="databricks-profile",
+        ),
+    ],
+)
+def test_native_codex_launch_uses_chatgpt_login(
+    _isolated: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    auth: dict[str, object],
+    launch: NativeCodexLaunch,
+    openai_base_url: str | None,
+    expected: bool,
+) -> None:
+    """Only an explicit built-in OpenAI launch on a ChatGPT account counts."""
+    codex_dir = _isolated / ".codex"
+    codex_dir.mkdir()
+    (codex_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+    if openai_base_url is None:
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    else:
+        monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
+
+    assert native_codex_launch_uses_chatgpt_login(launch) is expected
+
+
+_CHATGPT_CATALOG: list[dict[str, object]] = [
+    {"id": "gpt-5.6-sol", "model": "gpt-5.6-sol", "isDefault": True},
+    {"id": "gpt-6-astra", "model": "gpt-6-astra"},
+]
+
+
+@pytest.mark.parametrize(
+    ("model", "catalog", "expected"),
+    [
+        pytest.param("system.ai.gpt-6-astra", _CHATGPT_CATALOG, "gpt-6-astra", id="listed"),
+        pytest.param("databricks-gpt-5-6-sol", _CHATGPT_CATALOG, "gpt-5.6-sol", id="dotted"),
+        pytest.param("system.ai.glm-5-2", _CHATGPT_CATALOG, "gpt-5.6-sol", id="unserved"),
+        pytest.param(
+            "system.ai.glm-5-2",
+            [{"id": "system.ai.glm-5-2", "model": "system.ai.glm-5-2"}, *_CHATGPT_CATALOG],
+            "gpt-5.6-sol",
+            id="extended-row",
+        ),
+        pytest.param("system.ai.gpt-6-astra", None, "gpt-6-astra", id="no-catalog"),
+        pytest.param("system.ai.kimi-k3", None, CODEX_DEFAULT_MODEL, id="no-openai-slug"),
+        pytest.param("system.ai.glm-5-2", None, CODEX_DEFAULT_MODEL, id="no-catalog-glm"),
+        pytest.param("gpt-6-astra", None, "gpt-6-astra", id="codex-slug"),
+    ],
+)
+def test_chatgpt_login_launch_model_pins_a_model_the_login_serves(
+    model: str, catalog: list[dict[str, object]] | None, expected: str
+) -> None:
+    """A Databricks id becomes codex's own spelling, or a default the login serves."""
+    assert chatgpt_login_launch_model(model, catalog) == expected

@@ -98,6 +98,16 @@ def bare_model_id(model: str) -> str:
     return bare
 
 
+def is_databricks_model_id(model: str) -> bool:
+    """Whether *model* is spelled as a Databricks servable id.
+
+    :param model: Any model id, e.g. ``"system.ai.gpt-6-astra"``.
+    :returns: ``True`` for a ``databricks-`` or ``system.ai.`` id, which only
+        a Databricks gateway serves; ``False`` for codex's own slugs.
+    """
+    return model.strip().lower().startswith(_CATALOG_PREFIXES)
+
+
 def comparable_model_id(model: str) -> str:
     """Fold a model id to the spelling codex ids compare in.
 

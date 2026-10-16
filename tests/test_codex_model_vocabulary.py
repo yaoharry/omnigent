@@ -12,6 +12,7 @@ from omnigent.models.codex_model_vocabulary import (
     codex_reachable_model_slug,
     codex_spawn_model,
     comparable_model_id,
+    is_databricks_model_id,
 )
 from omnigent.util.reasoning_effort import clamp_effort_for_model
 
@@ -110,6 +111,13 @@ def test_comparable_model_id_folds_prefix_dots_and_case() -> None:
     assert comparable_model_id("gpt-5.6-luna") == "gpt-5-6-luna"
     assert comparable_model_id("system.ai.glm-5-2") == "glm-5-2"
     assert comparable_model_id("Databricks-GPT-5-6-Sol[1M]") == "gpt-5-6-sol"
+
+
+def test_is_databricks_model_id_matches_only_gateway_spellings() -> None:
+    assert is_databricks_model_id("system.ai.gpt-6-astra")
+    assert is_databricks_model_id(" Databricks-GPT-5-6-Sol")
+    assert not is_databricks_model_id("gpt-6-astra")
+    assert not is_databricks_model_id("gpt-5.6-sol")
 
 
 def test_catalog_id_translates_to_the_codex_slug() -> None:

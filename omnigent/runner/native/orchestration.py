@@ -4932,11 +4932,13 @@ async def _auto_create_codex_terminal(
         CodexAppServerResponseError,
         apply_codex_thread_effort,
         build_codex_native_server,
+        chatgpt_login_launch_model,
         codex_remote_resume_omits_permission_args,
         codex_session_meta_model_provider,
         fresh_codex_launch_catalog,
         is_unreadable_thread_error,
         native_codex_launch_pins_model_provider,
+        native_codex_launch_uses_chatgpt_login,
         preload_codex_thread_for_resume,
         resolve_native_codex_launch,
     )
@@ -5138,6 +5140,20 @@ async def _auto_create_codex_terminal(
                     _codex_launch = dataclasses.replace(_codex_launch, model=_default_id)
         if _codex_catalog and not _codex_catalog_was_stale:
             _fresh_codex_catalog = _codex_catalog
+    # A session pinned on the Databricks gateway can resume on a host that now
+    # routes Codex through a ChatGPT login, which refuses Databricks model ids.
+    if _codex_launch.model is not None and native_codex_launch_uses_chatgpt_login(_codex_launch):
+        _chatgpt_model = chatgpt_login_launch_model(_codex_launch.model, _fresh_codex_catalog)
+        if _chatgpt_model != _codex_launch.model:
+            _logger.warning(
+                "codex-native: model %r for session %s is a Databricks model id, which "
+                "Codex's ChatGPT login can't run; launching on %r",
+                _codex_launch.model,
+                session_id,
+                _chatgpt_model,
+                extra={"session_id": session_id},
+            )
+            _codex_launch = dataclasses.replace(_codex_launch, model=_chatgpt_model)
     _session_meta_provider = codex_session_meta_model_provider(_codex_launch)
     # Cancel any surviving forwarder first so its teardown closes the OLD app-server,
     # not the one registered below — and so it can't mirror alongside the new one.
