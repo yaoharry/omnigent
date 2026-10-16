@@ -11,6 +11,7 @@ from omnigent.runtime import pending_inputs, session_stream
 from omnigent.server.routes._sessions.orchestration import (
     _persist_external_conversation_item,
     _record_native_input_lifecycle,
+    _skipped_native_message,
 )
 from omnigent.server.schemas import SessionEventInput
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
@@ -85,7 +86,10 @@ async def test_skipped_message_logs_committed_ids_once_and_keeps_enqueue_identit
     assert lost["cause_class"] == "unknown"
     assert lost["reason_code"] == "no_identity_linked_lifecycle"
     assert int(lost["pending_age_ms"]) >= 0
-    assert saved[lost["error_item_id"]].data.code == "native_prompt_not_recorded"
+    lost_error = saved[lost["error_item_id"]].data
+    assert lost_error.code == "native_prompt_not_recorded"
+    assert lost_error.reason_code == "no_identity_linked_lifecycle"
+    assert "before accepting a later one" in lost_error.message
     assert saved[lost["error_item_id"]].response_id == lost["response_id"]
     assert lost["matched_item_id"] == matched_id
     assert lost["matched_response_id"] == saved[matched_id].response_id == "resp_native"
@@ -106,7 +110,9 @@ async def test_skipped_message_logs_committed_ids_once_and_keeps_enqueue_identit
         matched_id: second,
     }
     assert any(
-        r.get("item_id") == lost["error_item_id"] and r.get("response_id") == lost["response_id"]
+        r.get("item_id") == lost["error_item_id"]
+        and r.get("response_id") == lost["response_id"]
+        and r.get("item_reason_code") == "no_identity_linked_lifecycle"
         for r in receipts
     )
 
@@ -124,11 +130,22 @@ async def test_skipped_message_logs_committed_ids_once_and_keeps_enqueue_identit
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("outcome", "cause_class", "reason_code"),
+    ("outcome", "cause_class", "reason_code", "message_fragment"),
     [
-        ("completed", "accepted_missing_native_record", "completed_without_native_record"),
-        ("cancelled", "interrupted_or_lifecycle", "response_cancelled"),
-        ("incomplete", "interrupted_or_lifecycle", "response_incomplete"),
+        (
+            "completed",
+            "accepted_missing_native_record",
+            "completed_without_native_record",
+            "after it was sent without an error",
+        ),
+        ("cancelled", "interrupted_or_lifecycle", "response_cancelled", "turn was stopped or cut"),
+        (
+            "incomplete",
+            "interrupted_or_lifecycle",
+            "response_incomplete",
+            "turn was stopped or cut",
+        ),
+        ("failed", "unknown", "native_turn_error", "before its turn failed"),
     ],
 )
 async def test_lifecycle_without_a_native_record_has_a_stable_cause_class(
@@ -137,6 +154,7 @@ async def test_lifecycle_without_a_native_record_has_a_stable_cause_class(
     outcome: str,
     cause_class: str,
     reason_code: str,
+    message_fragment: str,
 ) -> None:
     store = SqlAlchemyConversationStore(db_uri)
     conv = store.create_conversation(title="Test", labels={"omnigent.wrapper": "codex-native"})
@@ -160,12 +178,15 @@ async def test_lifecycle_without_a_native_record_has_a_stable_cause_class(
             "response": {"id": "resp_missing"},
         },
     )
+    terminal_response: dict[str, object] = {"id": "resp_missing"}
+    if outcome == "failed":
+        terminal_response["error"] = {"code": "native_turn_error", "message": "private failure"}
     _record_native_input_lifecycle(
         conv.id,
         {
             "type": f"response.{outcome}",
             "input_stable_id": "a" * 32,
-            "response": {"id": "resp_missing"},
+            "response": terminal_response,
         },
     )
     assert pending_inputs.has_pending(conv.id)
@@ -205,7 +226,12 @@ async def test_lifecycle_without_a_native_record_has_a_stable_cause_class(
     assert record.attributes["lifecycle_response_id"] == "resp_missing"
     saved = {item.id: item for item in store.list_items(conv.id).data}
     assert saved[record.attributes["item_id"]].data.content[0]["text"] == "missing"
-    assert saved[record.attributes["error_item_id"]].data.code == "native_prompt_not_recorded"
+    error = saved[record.attributes["error_item_id"]].data
+    assert error.code == "native_prompt_not_recorded"
+    assert error.reason_code == reason_code
+    assert message_fragment in error.message
+    assert "never recorded this message" in error.message
+    assert "private failure" not in error.message
 
 
 @pytest.mark.asyncio
@@ -315,3 +341,26 @@ async def test_uncertain_or_interrupted_input_does_not_report_missing_message(
     assert all(item.type != "error" for item in saved.values())
     assert "item_id" not in attrs and "error_item_id" not in attrs
     assert pending_inputs.snapshot_for(conv.id) == []
+
+
+@pytest.mark.parametrize(
+    ("cause_class", "stage", "fragment"),
+    [
+        ("rejected_before_handoff", "rejected_before_handoff", "Claude Code never received"),
+        ("unknown", "native_turn_started", "before accepting a later one"),
+        ("unknown", "unknown", "before accepting a later one"),
+    ],
+)
+def test_skipped_native_message_names_only_reported_causes(
+    cause_class: pending_inputs.NativeInputCauseClass, stage: str, fragment: str
+) -> None:
+    skipped = pending_inputs.DrainedInput(
+        pending_id="pending_1",
+        content=[{"type": "input_text", "text": "private"}],
+        last_delivery_stage=stage,
+        cause_class=cause_class,
+        reason_code="some_code",
+    )
+    message = _skipped_native_message(skipped, "Claude Code")
+    assert fragment in message
+    assert "private" not in message

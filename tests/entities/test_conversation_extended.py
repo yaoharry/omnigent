@@ -79,6 +79,35 @@ def test_error_data_rejects_whitespace_only_code() -> None:
         ErrorData(source="tool", code="  \t  ", message="msg")
 
 
+@pytest.mark.parametrize(
+    ("reason_code", "expected"),
+    [
+        (None, None),
+        ("completed_without_native_record", "completed_without_native_record"),
+        ("response.failed:native_turn_error", "response.failed:native_turn_error"),
+        ("the message text the user typed", None),
+        ("x" * 65, None),
+        ("", None),
+    ],
+)
+def test_error_data_keeps_only_bounded_reason_codes(
+    reason_code: str | None, expected: str | None
+) -> None:
+    err = ErrorData(source="execution", code="c", message="m", reason_code=reason_code)
+    assert err.reason_code == expected
+    wire = ConversationItem(
+        id="item_1",
+        type="error",
+        status="completed",
+        response_id="resp_1",
+        created_at=1,
+        data=err,
+    ).to_api_dict()
+    assert wire.get("reason_code") == expected
+    if expected is None:
+        assert "reason_code" not in wire
+
+
 def test_error_data_rejects_invalid_source() -> None:
     with pytest.raises(ValidationError):
         ErrorData(source="unknown", code="c", message="m")  # type: ignore[arg-type]

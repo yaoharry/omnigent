@@ -3424,7 +3424,9 @@ def _build_skipped_native_items(
 
     Each skipped entry produces ``[user_message, error_item]``: the message the
     person sent, followed by an error saying the harness never recorded it, so
-    the transcript keeps the lost message instead of silently dropping it.
+    the transcript keeps the lost message instead of silently dropping it. The
+    error names the cause when the runner reported one for that input and
+    carries the entry's ``reason_code`` so dashboards can split these failures.
     Stable IDs derived from ``pending_id`` make each pair idempotent under the
     batch append so no pre-flight has_item probe is needed — if the anchor item
     is already persisted (a forwarder retry), these items are too, and append
@@ -3437,25 +3439,25 @@ def _build_skipped_native_items(
     """
     if not skipped_entries:
         return []
-    if _is_kiro_native_session(conv):
+    kiro = _is_kiro_native_session(conv)
+    if kiro:
         harness_key = "kiro"
         code = "kiro_native_prompt_not_recorded"
-        message = (
-            "Kiro did not accept this web message into its structured session "
-            "transcript. The native terminal may have shown the underlying error."
-        )
+        display_name = "Kiro"
     else:
         native_agent = _native_coding_agent_for_session(conv)
         display_name = native_agent.display_name if native_agent is not None else "The agent"
         harness_key = "native"
         code = "native_prompt_not_recorded"
-        message = (
-            f"{display_name} never recorded this message in its transcript before "
-            "accepting a later one, so it was not delivered. The native terminal may "
-            "have shown the underlying error."
-        )
     items: list[NewConversationItem] = []
     for skipped in skipped_entries:
+        if kiro:
+            message = (
+                "Kiro did not accept this web message into its structured session "
+                "transcript. The native terminal may have shown the underlying error."
+            )
+        else:
+            message = _skipped_native_message(skipped, display_name)
         turn_id = generate_task_id()
         items.append(
             NewConversationItem(
@@ -3473,7 +3475,12 @@ def _build_skipped_native_items(
             NewConversationItem(
                 type="error",
                 response_id=turn_id,
-                data=ErrorData(source="execution", code=code, message=message),
+                data=ErrorData(
+                    source="execution",
+                    code=code,
+                    message=message,
+                    reason_code=skipped.reason_code,
+                ),
                 stable_id=uuid.uuid5(
                     uuid.NAMESPACE_URL,
                     f"omnigent-skipped-{harness_key}-error:{session_id}:{skipped.pending_id}",
@@ -3481,6 +3488,37 @@ def _build_skipped_native_items(
             )
         )
     return items
+
+
+def _skipped_native_message(skipped: pending_inputs.DrainedInput, display_name: str) -> str:
+    """
+    Explain a lost native message from its identity-linked delivery evidence.
+
+    Only causes the runner reported for this exact input are named; anything
+    else keeps the generic text instead of guessing.
+
+    :param skipped: A skipped entry already passed through
+        :func:`pending_inputs.classify_missing_native_record`.
+    :param display_name: Agent name that starts the sentence, e.g. ``"Claude Code"``.
+    :returns: The error message for the transcript.
+    """
+    if skipped.cause_class == "rejected_before_handoff":
+        return f"{display_name} never received this message, so it was not delivered."
+    if skipped.cause_class == "interrupted_or_lifecycle":
+        detail = "before its turn was stopped or cut short"
+    elif skipped.cause_class == "accepted_missing_native_record":
+        detail = "after it was sent without an error"
+    elif skipped.last_delivery_stage == "native_turn_failed":
+        detail = "before its turn failed"
+    else:
+        detail = "before accepting a later one"
+    message = (
+        f"{display_name} never recorded this message in its transcript {detail}, "
+        "so it was not delivered."
+    )
+    if skipped.cause_class == "interrupted_or_lifecycle":
+        return message
+    return f"{message} The native terminal may have shown the underlying error."
 
 
 async def _enrich_terminal_status_with_subagent_output(

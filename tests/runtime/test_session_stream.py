@@ -1065,6 +1065,36 @@ def test_sse_safe_attributes_omits_oversized_code() -> None:
     assert "item_code" not in attrs
 
 
+@pytest.mark.parametrize(
+    ("reason_code", "logged"),
+    [
+        ("completed_without_native_record", True),
+        ("free text the user wrote", False),
+        ("x" * 65, False),
+        (7, False),
+    ],
+)
+def test_sse_safe_attributes_logs_only_bounded_error_reason_codes(
+    reason_code: object, logged: bool
+) -> None:
+    # The reason code splits a generic error code on dashboards; free text never passes.
+    event = {
+        "type": "response.output_item.done",
+        "item": {
+            "id": "item_e",
+            "type": "error",
+            "code": "native_prompt_not_recorded",
+            "reason_code": reason_code,
+        },
+    }
+    attrs = session_stream._sse_safe_attributes(event)
+    assert attrs["item_code"] == "native_prompt_not_recorded"
+    if logged:
+        assert attrs["item_reason_code"] == reason_code
+    else:
+        assert "item_reason_code" not in attrs
+
+
 def test_sse_safe_attributes_uses_real_serializer_for_destructive_error() -> None:
     # A destructive error item (no level) built through the real to_api_dict()
     # serializer must have item_code and item_source captured, and item_level

@@ -90,6 +90,17 @@ Skipped inputs also carry a bounded `cause_class`:
 `reason_code` is a bounded machine code such as an error code or
 `completed_without_native_record`; it never contains prompt or terminal text.
 
+The saved `native_prompt_not_recorded` error item carries the same
+`reason_code`, and SSE logging records it as `item_reason_code` on the error's
+`response.output_item.done` row, so the error can be split without a join. Its
+message names the cause only when the identity-linked evidence shows one: the
+send completed without an error (`accepted_missing_native_record`), the turn
+was stopped or cut short (`interrupted_or_lifecycle`), the turn failed
+(`last_delivery_stage` = `native_turn_failed`), or the harness never received
+it (`rejected_before_handoff`). Anything else keeps the generic text. Claude's
+submit verification (`verification`, `retries`, `attempt`) stays on
+`claude_native_delivery_finished`; join it on `input_stable_id`.
+
 `match_method` is `normalized_text`, `attachment_normalized_text`,
 `fifo_fallback`, or `input_stable_id`. `last_delivery_stage` records the last
 identity-linked stage the server observed: enqueue/forward stages, native turn

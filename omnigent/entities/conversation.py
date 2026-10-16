@@ -29,6 +29,9 @@ _ATTACHMENT_MARKER_RE = re.compile(
     rf"^(?:\[Attached(?: file)?: .+\]|{UNRESOLVED_ATTACHMENT_MARKER_PATTERN})$"
 )
 
+# Diagnostic codes on error items must stay machine codes, never free text.
+_ERROR_REASON_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+
 # Generated titles stay compact by default, while explicit user formats and
 # manually assigned titles have room for structured identifiers.
 DEFAULT_GENERATED_TITLE_MAX_CHARS = 100
@@ -436,6 +439,10 @@ class ErrorData(BaseModel):
     :param cause: Optional one or two sentences explaining why it failed.
     :param remediation: Optional concrete next step, e.g. the sign-in link
         and code; the card offers it as an action.
+    :param reason_code: Optional bounded machine code naming the evidence
+        behind ``code``, e.g. ``"completed_without_native_record"``. Used for
+        diagnostics only; it is never rendered and never carries prompt or
+        terminal text. A value outside ``[A-Za-z0-9_.:-]{1,64}`` is dropped.
     """
 
     source: Literal["llm", "execution", "tool", "harness"]
@@ -445,6 +452,20 @@ class ErrorData(BaseModel):
     title: str | None = None
     cause: str | None = None
     remediation: str | None = None
+    reason_code: str | None = None
+
+    @field_validator("reason_code")
+    @classmethod
+    def drop_unbounded_reason_code(cls, value: str | None) -> str | None:
+        """
+        Keep a diagnostic code only when it is a bounded machine code.
+
+        :param value: Candidate code, e.g. ``"completed_without_native_record"``.
+        :returns: The code, or ``None`` when it is absent or not a bounded code.
+        """
+        if value is None or not _ERROR_REASON_CODE_RE.fullmatch(value):
+            return None
+        return value
 
     @field_validator("code", "message")
     @classmethod

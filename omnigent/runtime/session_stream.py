@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any
@@ -168,6 +169,8 @@ _SSE_SAFE_KEYS = (
     "context_window",
     "total_cost_usd",
 )
+# An error item's diagnostic reason code is logged only as a bounded machine code.
+_ITEM_REASON_CODE_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
 
 
 def _sse_safe_attributes(event: dict[str, Any]) -> dict[str, object]:
@@ -205,9 +208,9 @@ def _sse_safe_attributes(event: dict[str, Any]) -> dict[str, object]:
             attrs["item_id"] = item["id"]
         if isinstance(item.get("type"), str):
             attrs["item_type"] = item["type"]
-        # For error items capture code, level and source (all flat on the item
-        # from to_api_dict()) so dashboards can exclude info-level notices from
-        # error-rate metrics and group errors by cause and source.
+        # For error items capture code, level, source and reason code (all flat
+        # on the item from to_api_dict()) so dashboards can exclude info-level
+        # notices from error-rate metrics and group errors by cause and source.
         if item.get("type") == "error":
             if isinstance(item.get("level"), str):
                 attrs["item_level"] = item["level"]
@@ -217,6 +220,9 @@ def _sse_safe_attributes(event: dict[str, Any]) -> dict[str, object]:
             source = item.get("source")
             if isinstance(source, str) and len(source) <= 32:
                 attrs["item_source"] = source
+            reason_code = item.get("reason_code")
+            if isinstance(reason_code, str) and _ITEM_REASON_CODE_RE.fullmatch(reason_code):
+                attrs["item_reason_code"] = reason_code
     if event.get("type") == "session.input.consumed":
         data = event.get("data")
         if isinstance(data, dict):

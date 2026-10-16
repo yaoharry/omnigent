@@ -2124,6 +2124,18 @@
             "title": "Message",
             "type": "string"
           },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional bounded machine code naming the evidence behind `code`, e.g. `\"completed_without_native_record\"`. Used for diagnostics only; it is never rendered and never carries prompt or terminal text. A value outside `[A-Za-z0-9_.:-]{1,64}` is dropped.",
+            "title": "Reason Code"
+          },
           "remediation": {
             "anyOf": [
               {
