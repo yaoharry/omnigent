@@ -142,7 +142,7 @@ def _reserved_codex_arg(args: Sequence[str], reserved_tokens: frozenset[str]) ->
             # Skip the option and its value (an attached ``=`` form carries its own).
             index += 1 if "=" in arg else 2
             continue
-        token = arg.split("=", 1)[0]
+        token = arg.split("=", 1)[0] if arg.startswith("-") else arg
         if token in reserved_tokens:
             return token
         index += 1

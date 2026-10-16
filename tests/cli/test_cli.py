@@ -1038,6 +1038,7 @@ def test_codex_cli_no_pass_through_persists_empty_args(
     ("args", "expected", "conversation"),
     [
         (["--flag"], ("--flag",), None),
+        (["resume=example"], ("resume=example",), None),
         (["-m", "resume"], ("-m", "resume"), None),
         (["--model", "resume"], (), None),
         (["--remote-auth-token-env", "resume"], ("--remote-auth-token-env", "resume"), None),

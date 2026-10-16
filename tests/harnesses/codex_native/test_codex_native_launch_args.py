@@ -720,6 +720,8 @@ def test_remote_attach_rejects_caller_resume_selectors(
     "allowed_args",
     [
         [],
+        ["resume=example"],
+        ["app-server=example"],
         # ``app-server`` as an option VALUE is not the subcommand — must pass.
         ["--model", "app-server"],
         ["--model=app-server"],
