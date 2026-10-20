@@ -616,7 +616,6 @@ def test_compaction_model_failure_code_survives_its_budget_text() -> None:
         ("agent_startup_pending", "still starting"),
         ("codex_thread_not_started", "never ran"),
         ("codex_compaction_model_failed", "previous model"),
-        ("codex_turn_rejected", "wasn't sent"),
         ("input_too_large", "longer than the agent accepts"),
     ],
 )

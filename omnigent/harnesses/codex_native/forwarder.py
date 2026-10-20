@@ -63,7 +63,7 @@ from omnigent.harnesses.codex_native.elicitation import (
 from omnigent.harnesses.codex_native.elicitation import (
     is_codex_request_id as _is_codex_request_id,
 )
-from omnigent.inner.native_attachments import mirrored_text_fits, restore_spilled_text
+from omnigent.inner.native_attachments import restore_spilled_text
 from omnigent.native._native_forwarder_health import (
     note_post_success as note_native_post_success,
 )
@@ -8572,7 +8572,7 @@ def _with_spilled_pastes_restored(text: str, bridge_dir: Path) -> str:
     :returns: The text to mirror.
     """
     restored = restore_spilled_text(text, bridge_dir)
-    if restored != text and not mirrored_text_fits(restored):
+    if restored is None:
         _logger.warning("Codex user message too large to mirror with its paste restored")
         return text
     return restored

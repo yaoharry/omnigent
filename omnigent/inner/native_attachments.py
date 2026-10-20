@@ -208,7 +208,11 @@ def materialize_text(text: str, bridge_dir: Path) -> Path | None:
     return _materialize_bytes(raw_bytes, f"pasted_text_{digest}.txt", bridge_dir)
 
 
-def restore_spilled_text(text: str, bridge_dir: Path) -> str:
+# What a mirrored user message's event spends outside its text: keys, ids, a bounded source id.
+_MIRRORED_MESSAGE_ENVELOPE_BYTES = 4 * 1024
+
+
+def restore_spilled_text(text: str, bridge_dir: Path) -> str | None:
     """
     Put back the text each :func:`materialize_text` reference in *text* stands for.
 
@@ -218,7 +222,9 @@ def restore_spilled_text(text: str, bridge_dir: Path) -> str:
 
     :param text: Message text as the harness echoed it.
     :param bridge_dir: Session bridge path, used to identify its attachment cache.
-    :returns: *text* with each such reference replaced by the text it stands for.
+    :returns: *text* with each such reference replaced, or ``None`` when the
+        restored message would not fit one session event. Restoring stops at that
+        budget, so repeated references never expand past it.
     """
     if "pasted_text_" not in text:
         return text
@@ -227,29 +233,34 @@ def restore_spilled_text(text: str, bridge_dir: Path) -> str:
         rf"(?m)^[ \t]*\[Attached file: {re.escape(str(cache))}/"
         r"(?P<name>pasted_text_(?P<digest>[0-9a-f]{12})(?:_(?P=digest))?\.txt)\][ \t]*(?=\r?$)"
     )
-
-    def original(match: re.Match[str]) -> str:
-        raw_bytes = _read_cached_file(cache, match.group("name"))
-        if raw_bytes is None or attachment_content_digest(raw_bytes) != match.group("digest"):
-            return match.group(0)
-        return raw_bytes.decode("utf-8", errors="replace")
-
-    return reference.sub(original, text)
-
-
-# What a mirrored user message's event spends outside its text: keys, ids, a bounded source id.
-_MIRRORED_MESSAGE_ENVELOPE_BYTES = 4 * 1024
-
-
-def mirrored_text_fits(text: str) -> bool:
-    """
-    Whether a user message with *text* fits one session event once mirrored.
-
-    :param text: The message text the forwarder would post, pastes restored.
-    :returns: ``True`` when its JSON encoding leaves room for the event envelope.
-    """
-    encoded = json.dumps(text, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    return len(encoded) <= MAX_SESSION_EVENT_REQUEST_BYTES - _MIRRORED_MESSAGE_ENVELOPE_BYTES
+    budget = MAX_SESSION_EVENT_REQUEST_BYTES - _MIRRORED_MESSAGE_ENVELOPE_BYTES
+    # Each file is read and verified once, however often the message repeats it.
+    pastes: dict[str, str | None] = {}
+    parts: list[str] = []
+    size = end = 0
+    restored_any = False
+    for match in reference.finditer(text):
+        name = match.group("name")
+        if name not in pastes:
+            raw_bytes = _read_cached_file(cache, name)
+            verified = raw_bytes is not None and (
+                attachment_content_digest(raw_bytes) == match.group("digest")
+            )
+            pastes[name] = raw_bytes.decode("utf-8", errors="replace") if verified else None
+        paste = pastes[name]
+        restored_any = restored_any or paste is not None
+        parts += [text[end : match.start()], match.group(0) if paste is None else paste]
+        end = match.end()
+        # UTF-8 length is a lower bound on the event's JSON, so stop before building more.
+        size += len(parts[-2].encode("utf-8")) + len(parts[-1].encode("utf-8"))
+        if size > budget and restored_any:
+            return None
+    if not restored_any:
+        return text
+    parts.append(text[end:])
+    restored = "".join(parts)
+    encoded = json.dumps(restored, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return restored if len(encoded) <= budget else None
 
 
 def _read_cached_file(cache: Path, name: str) -> bytes | None:

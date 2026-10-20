@@ -72,7 +72,6 @@ from omnigent.inner.native_attachments import (
     codex_resize_metadata_path,
     materialize_attachment,
     materialize_text,
-    mirrored_text_fits,
     parse_data_uri,
     requires_filesystem,
     restore_spilled_text,
@@ -100,13 +99,8 @@ _BRIDGE_STATE_SLOW_POLL_SECONDS = 0.25
 # text beyond this moves to an attachment file, with headroom to spare.
 _MAX_INLINE_TEXT_CHARS = 900_000
 
-# Error code for input Codex will not take, from either Omnigent's own checks
-# or Codex's rejection.
+# Error code for input Codex won't take, from Omnigent's checks or Codex's own.
 _INPUT_TOO_LARGE_CODE = "input_too_large"
-
-# Error code for a request before ``turn/start`` that Codex refused with a
-# JSON-RPC error response.
-_TURN_REJECTED_CODE = "codex_turn_rejected"
 
 
 class _CodexNativeInputUndelivered(RuntimeError):
@@ -131,20 +125,7 @@ def _spilled_mirror_fits(input_items: list[dict[str, object]], bridge_dir: Path)
     text = "\n\n".join(
         value for item in input_items if isinstance(value := item.get("text"), str) and value
     )
-    restored = restore_spilled_text(text, bridge_dir)
-    return restored == text or mirrored_text_fits(restored)
-
-
-async def _pre_delivery_request(
-    client: CodexAppServerClient, method: str, params: CodexParams
-) -> CodexMessage:
-    """Send a request that precedes delivery; a refusal proves the input was not sent."""
-    try:
-        return await client.request(method, params)
-    except CodexAppServerResponseError as error:
-        if is_server_draining_error(error):
-            raise
-        raise _CodexNativeInputUndelivered(_rejected_request_failure(error)) from error
+    return restore_spilled_text(text, bridge_dir) is not None
 
 
 async def _wait_for_bridge_state(
@@ -404,8 +385,7 @@ async def _start_codex_turn(
             effort,
         )
     if settings_overrides:
-        await _pre_delivery_request(
-            client,
+        await client.request(
             "thread/settings/update",
             {
                 "threadId": state.thread_id,
@@ -874,8 +854,7 @@ class CodexNativeExecutor(Executor):
                             side_chat.request_side_chat(self._bridge_dir, side_question)
                         else:
                             if goal_objective is not None:
-                                await _pre_delivery_request(
-                                    client,
+                                await client.request(
                                     "thread/goal/set",
                                     {
                                         "threadId": state.thread_id,
@@ -898,11 +877,11 @@ class CodexNativeExecutor(Executor):
                         ) and is_server_draining_error(exc):
                             startup_failure = CODEX_APP_SERVER_STOPPED
                             undelivered = True
-                        elif isinstance(exc, CodexAppServerResponseError) and _is_input_too_large(
-                            exc
+                        elif isinstance(exc, CodexAppServerResponseError) and (
+                            too_large := _input_too_large_failure(exc)
                         ):
                             # Codex validates the size before it submits any input.
-                            startup_failure = _rejected_request_failure(exc)
+                            startup_failure = too_large
                             undelivered = True
                         _logger.exception(
                             "Codex native turn injection failed",
@@ -951,48 +930,31 @@ class CodexNativeExecutor(Executor):
             yield TurnComplete(response=None)
 
 
-def _input_error_data(error: CodexAppServerResponseError) -> dict[str, object] | None:
-    """Return the ``data`` object of a JSON-RPC error response, if any."""
+def _input_too_large_failure(error: CodexAppServerResponseError) -> CodexStartupFailure | None:
+    """
+    Describe Codex refusing input as longer than it accepts.
+
+    :param error: The structured error Codex answered with, whose data names the
+        limit, e.g. ``{"input_error_code": "input_too_large", "max_chars": 1048576,
+        "actual_chars": 1309439}``.
+    :returns: A coded failure stating the limit when Codex reports it, or ``None``
+        for any other error.
+    """
     data = error.error.get("data") if isinstance(error.error, dict) else None
-    return data if isinstance(data, dict) else None
-
-
-def _is_input_too_large(error: CodexAppServerResponseError) -> bool:
-    """Whether Codex refused the input as longer than it accepts."""
-    data = _input_error_data(error)
-    return data is not None and data.get("input_error_code") == _INPUT_TOO_LARGE_CODE
-
-
-def _rejected_request_failure(error: CodexAppServerResponseError) -> CodexStartupFailure:
-    """
-    Describe a request Codex refused with a JSON-RPC error response.
-
-    :param error: The structured error Codex answered with. For oversized input
-        its data names the limit, e.g. ``{"input_error_code": "input_too_large",
-        "max_chars": 1048576, "actual_chars": 1309439}``.
-    :returns: A coded failure. ``input_too_large`` states the limit when Codex
-        reports it; any other refusal keeps Codex's error text.
-    """
-    data = _input_error_data(error)
-    if data is not None and _is_input_too_large(error):
-        max_chars = data.get("max_chars")
-        actual_chars = data.get("actual_chars")
-        detail = (
-            f"This message has {actual_chars:,} characters of text; Codex accepts at most "
-            f"{max_chars:,} per message, so it was not sent."
-            if isinstance(max_chars, int) and isinstance(actual_chars, int)
-            else "This message is longer than Codex accepts, so it was not sent."
-        )
-        return CodexStartupFailure(
-            message=detail,
-            code=_INPUT_TOO_LARGE_CODE,
-            title="Message too long for Codex",
-            remediation="Shorten the message, or send it in smaller parts.",
-        )
+    if not isinstance(data, dict) or data.get("input_error_code") != _INPUT_TOO_LARGE_CODE:
+        return None
+    max_chars, actual_chars = data.get("max_chars"), data.get("actual_chars")
+    detail = (
+        f"This message has {actual_chars:,} characters of text; Codex accepts at most "
+        f"{max_chars:,} per message, so it was not sent."
+        if isinstance(max_chars, int) and isinstance(actual_chars, int)
+        else "This message is longer than Codex accepts, so it was not sent."
+    )
     return CodexStartupFailure(
-        message=f"Codex native executor error: {error}",
-        code=_TURN_REJECTED_CODE,
-        title="Codex rejected this message",
+        message=detail,
+        code=_INPUT_TOO_LARGE_CODE,
+        title="Message too long for Codex",
+        remediation="Shorten the message, or send it in smaller parts.",
     )
 
 

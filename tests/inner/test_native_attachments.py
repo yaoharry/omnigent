@@ -498,6 +498,50 @@ def test_restore_spilled_text_leaves_unverified_references_alone(
     assert restore_spilled_text(echoed, bridge) == echoed
 
 
+def test_restore_spilled_text_reads_a_repeated_paste_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reference repeated in one message reuses the verified paste."""
+    path = materialize_text("one paste", tmp_path)
+    reads: list[str] = []
+    real_read = native_attachments._read_cached_file
+
+    def _counting_read(cache: Path, name: str) -> bytes | None:
+        reads.append(name)
+        return real_read(cache, name)
+
+    monkeypatch.setattr(native_attachments, "_read_cached_file", _counting_read)
+    echoed = "\n".join([f"[Attached file: {path}]"] * 3)
+
+    assert restore_spilled_text(echoed, tmp_path) == "one paste\none paste\none paste"
+    assert len(reads) == 1
+
+
+def test_restore_spilled_text_stops_once_repeats_outgrow_one_event(tmp_path: Path) -> None:
+    """Repeating a valid reference can't expand the message far past one session event."""
+    import tracemalloc
+
+    paste = "x" * (MAX_SESSION_EVENT_REQUEST_BYTES // 8)
+    path = materialize_text(paste, tmp_path)
+    # Restored in full this would be 12 events' worth of text.
+    echoed = "\n".join([f"[Attached file: {path}]"] * 96)
+
+    tracemalloc.start()
+    try:
+        assert restore_spilled_text(echoed, tmp_path) is None
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * MAX_SESSION_EVENT_REQUEST_BYTES
+
+
+def test_restore_spilled_text_leaves_text_with_nothing_to_restore(tmp_path: Path) -> None:
+    """The size budget only applies once a paste is put back."""
+    text = "pasted_text_ mentioned in a message " + "y" * MAX_SESSION_EVENT_REQUEST_BYTES
+
+    assert restore_spilled_text(text, tmp_path) is text
+
+
 def test_materialize_cache_does_not_overwrite_when_both_names_taken(
     tmp_path: Path,
 ) -> None:

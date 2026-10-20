@@ -748,8 +748,7 @@ async def test_overlong_goal_reaches_the_turn_error_as_an_undelivered_input_erro
     """
     Through the harness adapter, an over-long ``/goal`` fails with a coded detail.
 
-    Uncoded, the adapter wraps the error in a bare ``RuntimeError`` and drops the
-    undelivered flag the server settles the queued message on.
+    The adapter preserves the failure code and undelivered flag.
     """
     from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter, InnerExecutorError
     from omnigent.runtime.harnesses._scaffold import TurnContext
@@ -2872,50 +2871,6 @@ def _install_failing_client(
     return _FailingClient
 
 
-def test_rejected_settings_update_is_reported_undelivered(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """
-    A JSON-RPC error on ``thread/settings/update`` means ``turn/start`` was never sent.
-
-    The message is flagged undelivered, with a code so the harness adapter keeps
-    the flag, and the server settles the sender's queued copy once instead of
-    leaving it to resurface as a false "not recorded" error at the next message.
-    """
-    client = _install_failing_client(
-        monkeypatch,
-        method="thread/settings/update",
-        error=CodexAppServerResponseError({"code": -32600, "message": "unknown model"}),
-    )
-    _start_state(tmp_path)
-
-    async def run() -> list[Any]:
-        return [
-            event
-            async for event in CodexNativeExecutor(bridge_dir=tmp_path).run_turn(
-                [{"role": "user", "content": [{"type": "input_text", "text": "hello"}]}],
-                [],
-                "",
-                ExecutorConfig(model="gpt-5.3-codex", extra={"reasoning_effort": "high"}),
-            )
-        ]
-
-    events = asyncio.run(run())
-
-    assert len(events) == 1
-    failure = events[0]
-    assert isinstance(failure, ExecutorError)
-    assert failure.undelivered is True
-    assert failure.code == "codex_turn_rejected"
-    assert failure.title == "Codex rejected this message"
-    assert failure.message.startswith("Codex native executor error:")
-    assert "unknown model" in failure.message
-    assert [method for method, _params in client.requests] == [
-        "model/list",
-        "thread/settings/update",
-    ]
-
-
 def test_input_too_large_rejection_is_a_clear_coded_undelivered_input_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2996,35 +2951,13 @@ def test_ambiguous_turn_start_failures_are_not_marked_undelivered(
     assert [method for method, _params in client.requests] == ["turn/start"]
 
 
-def test_rejected_goal_request_is_reported_undelivered(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Codex refusing ``thread/goal/set`` delivers nothing, and no turn is started."""
-    client = _install_failing_client(
-        monkeypatch,
-        method="thread/goal/set",
-        error=CodexAppServerResponseError({"code": -32600, "message": "goals are disabled"}),
-    )
-    _start_state(tmp_path)
-
-    events = _collect_turn_events(CodexNativeExecutor(bridge_dir=tmp_path), "/goal Finish it")
-
-    assert len(events) == 1
-    failure = events[0]
-    assert isinstance(failure, ExecutorError)
-    assert failure.undelivered is True
-    assert failure.code == "codex_turn_rejected"
-    assert [method for method, _params in client.requests] == ["thread/goal/set"]
-
-
 async def test_rejected_turn_start_reaches_the_turn_error_as_an_undelivered_coded_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """
     Through the harness adapter, a refused ``turn/start`` keeps its undelivered flag.
 
-    The adapter drops the flag from an uncoded error, so the code is what lets
-    the server settle the sender's queued message on the failed response.
+    The adapter preserves the failure code and undelivered flag.
     """
     from omnigent.runtime.harnesses._executor_adapter import ExecutorAdapter, InnerExecutorError
     from omnigent.runtime.harnesses._scaffold import TurnContext
