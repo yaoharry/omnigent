@@ -250,6 +250,10 @@ _CLAUDE_CODE_DISABLE_AGENT_VIEW_ENV = "CLAUDE_CODE_DISABLE_AGENT_VIEW"
 # only in the pane, so a web-driven session shows an unanswerable prompt —
 # often with nobody attached to the terminal at all.
 _CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY_ENV = "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY"
+# Claude Code sends this as ``x-client-app`` on every model request. Managed
+# settings can't override it, unlike ``ANTHROPIC_CUSTOM_HEADERS``, so it is how
+# the Unity Gateway can attribute Omnigent's Claude traffic on managed hosts.
+_CLAUDE_AGENT_SDK_CLIENT_APP_ENV = "CLAUDE_AGENT_SDK_CLIENT_APP"
 # Claude Code env vars that pin each model-tier alias to a provider-specific
 # model ID.  When set, the /model picker shows these IDs as options rather
 # than normalising to canonical Anthropic names (which the Databricks gateway
@@ -1529,7 +1533,8 @@ def build_native_claude_terminal_env(
     terminal stays pinned to the session the Omnigent UI is showing, and
     disables the in-TUI feedback surveys, which a web-driven session
     cannot see or answer (see
-    :data:`_CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY_ENV`).
+    :data:`_CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY_ENV`), and names Omnigent
+    as the client app (see :data:`_CLAUDE_AGENT_SDK_CLIENT_APP_ENV`).
 
     :param claude_config: Optional provider/ucode launch config, e.g.
         one carrying ``{"ANTHROPIC_BASE_URL": "https://example.com"}``.
@@ -1541,12 +1546,14 @@ def build_native_claude_terminal_env(
         _CLAUDE_CODE_ENABLE_TOOL_SEARCH_ENV: "true",
         _CLAUDE_CODE_DISABLE_AGENT_VIEW_ENV: "1",
         _CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY_ENV: "1",
+        _CLAUDE_AGENT_SDK_CLIENT_APP_ENV: "omnigent",
     }
     if claude_config is not None:
         terminal_env.update(claude_config.env)
         terminal_env[_CLAUDE_CODE_ENABLE_TOOL_SEARCH_ENV] = "true"
         terminal_env[_CLAUDE_CODE_DISABLE_AGENT_VIEW_ENV] = "1"
         terminal_env[_CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY_ENV] = "1"
+        terminal_env[_CLAUDE_AGENT_SDK_CLIENT_APP_ENV] = "omnigent"
     # On the apiKeyHelper path the credential reaches Claude Code via the
     # helper; a raw ANTHROPIC_API_KEY here re-triggers Claude Code's "Detected a
     # custom API key" menu, which hangs tmux delivery. Fail loud if one leaks.
