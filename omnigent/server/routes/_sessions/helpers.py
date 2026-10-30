@@ -4925,6 +4925,49 @@ def _failure_log_detail(error: ErrorDetail | None) -> str:
     return f"{message[:_FAILURE_LOG_DETAIL_MAX_CHARS]}… (+{dropped} chars)"
 
 
+# An older runner reports a turn error as a causeless ``failed`` edge and posts
+# the cause about 0.1-2.5 s later; waiting this long keeps it one failure.
+_BARE_FAILURE_GRACE_S = 3.0
+
+
+# Causeless ``failed`` edges waiting for their cause, by session id. The timer
+# runs in the context it was scheduled from, so it publishes in that workspace.
+_deferred_bare_failures: WorkspaceScopedCache[
+    str, tuple[asyncio.TimerHandle, Callable[[], None]]
+] = WorkspaceScopedCache()
+
+
+def defer_bare_failure(session_id: str, publish: Callable[[], None]) -> None:
+    """
+    Hold a causeless ``failed`` edge until its cause arrives or the grace ends.
+
+    A later ``failed`` edge that carries an error replaces it (see
+    :func:`_publish_status`); any other edge, or the end of the runner's
+    stream (:func:`flush_deferred_bare_failure`), publishes it first.
+
+    :param session_id: Session/conversation identifier.
+    :param publish: Publishes the held edge exactly as it arrived.
+    """
+    flush_deferred_bare_failure(session_id)
+    handle = asyncio.get_running_loop().call_later(
+        _BARE_FAILURE_GRACE_S, flush_deferred_bare_failure, session_id
+    )
+    _deferred_bare_failures[session_id] = (handle, publish)
+
+
+def flush_deferred_bare_failure(session_id: str) -> None:
+    """
+    Publish the causeless ``failed`` edge held for *session_id*, if any.
+
+    :param session_id: Session/conversation identifier.
+    """
+    deferred = _deferred_bare_failures.pop(session_id, None)
+    if deferred is not None:
+        handle, publish = deferred
+        handle.cancel()
+        publish()
+
+
 def _publish_status(
     session_id: str,
     status: str,
@@ -4981,6 +5024,16 @@ def _publish_status(
         confirmed finished (e.g. claude-native's ``Stop`` hook), which clears a
         sticky ``failed`` like a ``running`` edge would.
     """
+    # The cause for a causeless ``failed`` edge the runner just sent replaces
+    # it, so the turn fails once and with its reason. Any other edge comes after.
+    absorbed_bare_failure = False
+    if session_id in _deferred_bare_failures:
+        if status == "failed" and error is not None:
+            handle, _held = _deferred_bare_failures.pop(session_id)
+            handle.cancel()
+            absorbed_bare_failure = True
+        else:
+            flush_deferred_bare_failure(session_id)
     # ``failed`` is sticky against a trailing ``idle``. A turn error is
     # terminal — it must not be silently downgraded to ``idle`` by a
     # follow-on quiescence signal. This matters for claude-native: the
@@ -5069,6 +5122,7 @@ def _publish_status(
                 **failure_log_attributes(failure_context),
                 **(failure_intake or {}),
                 **(disconnect_evidence or {}),
+                **({"absorbed_bare_failure": "true"} if absorbed_bare_failure else {}),
             ),
         )
         session_live_state.persist_scheduled_run_completion(
