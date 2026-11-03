@@ -321,7 +321,12 @@ async def test_stale_cleanup_preserves_a_same_owner_native_terminal(
                     ).returncode
                     == 0
                 )
-                await _until((tmp_path / "accepted").exists)
+                await _until(
+                    lambda: (
+                        (tmp_path / "accepted").exists()
+                        and (tmp_path / "accepted").read_text() == "1"
+                    )
+                )
             release_failure.set()
             if failure == "cancel":
                 with pytest.raises(asyncio.CancelledError):
@@ -339,7 +344,12 @@ async def test_stale_cleanup_preserves_a_same_owner_native_terminal(
                 assert (tmp_path / "accepted").read_text() == "1"
                 assert not (tmp_path / "completed").exists()
                 (tmp_path / "release").touch()
-                await _until((tmp_path / "completed").exists)
+                await _until(
+                    lambda: (
+                        (tmp_path / "completed").exists()
+                        and (tmp_path / "completed").read_text() == "1"
+                    )
+                )
                 assert (tmp_path / "completed").read_text() == "1"
                 # Cleanup still retired the pane it observed; a respawned pane or a
                 # restarted server reuses identifiers, so only these scenarios check.
