@@ -1,0 +1,48 @@
+name: Audit actual macOS keep-awake assertion
+
+on:
+  push:
+    branches: [audit/macos-10570-20261104]
+
+permissions:
+  contents: read
+
+jobs:
+  actual-macos-assertion:
+    if: github.repository == 'yaoharry/omnigent'
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - name: Checkout owned audit probe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: audit
+          persist-credentials: false
+          sparse-checkout: dev/audit
+      - name: Checkout exact product revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yaoharry/omnigent
+          ref: 3ea27608120cf7b80c10fb17067d9b1cc9d005c8
+          path: product
+          persist-credentials: false
+          sparse-checkout: omnigent
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install monitor import dependency
+        run: python -m pip install --disable-pip-version-check httpx==0.28.1
+      - name: Observe actual caffeinate and macOS power assertions
+        run: >-
+          python audit/dev/audit/macos_keep_awake_probe.py
+          --product "$GITHUB_WORKSPACE/product"
+          --evidence "$RUNNER_TEMP/omnigent-10570/evidence"
+      - name: Upload owned process and power assertion evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: actual-macos-10570-evidence
+          path: ${{ runner.temp }}/omnigent-10570/evidence
+          if-no-files-found: error
+          retention-days: 3
