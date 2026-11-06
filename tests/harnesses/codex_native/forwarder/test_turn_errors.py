@@ -12,6 +12,7 @@ import logging
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -26,32 +27,13 @@ from omnigent.harnesses.codex_native.bridge import (
     write_bridge_state,
 )
 from tests.harnesses.codex_native.forwarder._support import (
+    _deliver_to_parent,
     _RecordingClient,
+    _seed_active_turn,
+    _status_post,
+    _turn_completed,
+    _turn_started,
 )
-
-
-def _seed_active_turn(bridge_dir: Path, turn_id: str) -> None:
-    """
-    Seed bridge state so a terminal turn edge clears the active turn.
-
-    ``_terminal_turn_status_edge`` only produces an edge when the terminal
-    event clears the recorded active turn id; without this seed it returns
-    ``None`` as "stale".
-
-    :param bridge_dir: Native Codex bridge directory (the test ``tmp_path``).
-    :param turn_id: Active Codex turn id to record, e.g. ``"turn_123"``.
-    :returns: None.
-    """
-    write_bridge_state(
-        bridge_dir,
-        CodexNativeBridgeState(
-            session_id="conv_x",
-            socket_path=str(bridge_dir / "app-server.sock"),
-            thread_id="thread_123",
-            codex_home=str(bridge_dir / "codex-home"),
-            active_turn_id=turn_id,
-        ),
-    )
 
 
 def test_classify_codex_error_auth_vs_generic() -> None:
@@ -1433,6 +1415,153 @@ async def test_interrupted_turn_keeps_launcher_certificate_record(tmp_path: Path
     assert read_certificate_failure(tmp_path) is not None
 
 
+_SYSTEM_ERROR_OUTPUT = (
+    "Codex reported a system error on this thread. Open the terminal for details."
+)
+
+
+def _system_error_event(thread_id: str = "thread_123") -> dict[str, Any]:
+    """
+    Build a Codex ``thread/status/changed`` envelope reporting a system error.
+
+    :param thread_id: Thread whose status changed, e.g. ``"thread_123"``.
+    :returns: Notification envelope dict.
+    """
+    return {
+        "method": "thread/status/changed",
+        "params": {"threadId": thread_id, "status": {"type": "systemError"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_system_error_fails_a_thread_no_turn_is_running(tmp_path: Path) -> None:
+    """A system error on an idle thread fails the session, since no turn reports it."""
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+
+    assert client.posts == [
+        _status_post({"status": "failed", "output": _SYSTEM_ERROR_OUTPUT}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_error_during_a_turn_waits_for_the_turn_outcome(tmp_path: Path) -> None:
+    """
+    A system error mid-turn can leave the turn running, so the turn's end decides.
+
+    Codex reports some non-fatal errors this way; posting failed here would
+    misreport a turn that goes on to complete.
+    """
+    _seed_active_turn(tmp_path, "turn_1")
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+    assert client.posts == []
+
+    await _deliver_to_parent(client, tmp_path, state, _turn_completed("turn_1", "completed"))
+
+    assert client.posts == [_status_post({"status": "idle", "response_id": "codex_turn_1"})]
+
+
+@pytest.mark.asyncio
+async def test_system_error_after_a_reported_error_is_not_repeated(tmp_path: Path) -> None:
+    """A standalone error that already failed the turn is not failed again by the thread state."""
+    _seed_active_turn(tmp_path, "turn_1")
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+
+    await _deliver_to_parent(
+        client,
+        tmp_path,
+        state,
+        {
+            "method": "error",
+            "params": {
+                "threadId": "thread_123",
+                "turnId": "turn_1",
+                "willRetry": False,
+                "error": {
+                    "message": "You've hit your usage limit.",
+                    "codexErrorInfo": "usageLimitExceeded",
+                },
+            },
+        },
+    )
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+
+    assert client.posts == [
+        _status_post(
+            {
+                "status": "failed",
+                "response_id": "codex_turn_1",
+                "output": "You've hit your usage limit.",
+            }
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_error_after_a_failed_turn_boundary_is_not_repeated(tmp_path: Path) -> None:
+    """A turn that already ended as failed is not failed again by the thread state."""
+    _seed_active_turn(tmp_path, "turn_1")
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+
+    await _deliver_to_parent(client, tmp_path, state, _turn_completed("turn_1", "failed"))
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+
+    assert client.posts == [_status_post({"status": "failed", "response_id": "codex_turn_1"})]
+
+
+@pytest.mark.asyncio
+async def test_system_error_after_a_new_turn_is_reported_again(tmp_path: Path) -> None:
+    """A turn that starts clears the earlier turn's failure, so a later system error reports."""
+    _seed_active_turn(tmp_path, "turn_1")
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+
+    await _deliver_to_parent(client, tmp_path, state, _turn_completed("turn_1", "failed"))
+    await _deliver_to_parent(client, tmp_path, state, _turn_started("turn_2"))
+    await _deliver_to_parent(client, tmp_path, state, _turn_completed("turn_2", "completed"))
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+
+    assert client.posts == [
+        _status_post({"status": "failed", "response_id": "codex_turn_1"}),
+        _status_post({"status": "running", "response_id": "codex_turn_2"}),
+        _status_post({"status": "idle", "response_id": "codex_turn_2"}),
+        _status_post({"status": "failed", "output": _SYSTEM_ERROR_OUTPUT}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_system_error_is_reported_once(tmp_path: Path) -> None:
+    """Repeated system-error reports for an idle thread post one failure."""
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event())
+
+    assert client.posts == [
+        _status_post({"status": "failed", "output": _SYSTEM_ERROR_OUTPUT}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_error_on_a_child_thread_is_not_the_sessions_status(tmp_path: Path) -> None:
+    """A child thread's system error is not the parent session's failure."""
+    client = _RecordingClient()
+    state = fwd._CodexForwarderState()
+    state.note_child_thread("thread_child", "conv_child")
+
+    await _deliver_to_parent(client, tmp_path, state, _system_error_event("thread_child"))
+
+    assert client.posts == []
+
+
 class _ContinuingCodexClient:
     """Caller-controlled native receipt, separate from the start acknowledgement."""
 
@@ -1440,6 +1569,7 @@ class _ContinuingCodexClient:
 
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict]] = []
+        self.background_requests: list[tuple[str, dict]] = []
         self.client_id = ""
         self.turn_status = "inProgress"
         self.receipt_fault = ""
@@ -1465,6 +1595,10 @@ class _ContinuingCodexClient:
         return {"result": {"thread": {"id": thread_id, "turns": turns}}}
 
     async def request(self, method: str, params: dict) -> dict:
+        if method == "thread/backgroundTerminals/list":
+            assert params == {"threadId": "thread_123"}
+            self.background_requests.append((method, params))
+            return {"result": {"data": []}}
         self.requests.append((method, params))
         if method == "turn/start":
             self.client_id = params["clientUserMessageId"]
@@ -1476,6 +1610,14 @@ class _ContinuingCodexClient:
 
     async def connect(self) -> None:
         self.closed = False
+
+
+def _last_lifecycle_status(client: _RecordingClient) -> dict:
+    return [
+        body["data"]
+        for _, body in client.posts
+        if body["type"] == "external_session_status" and "status" in body["data"]
+    ][-1]
 
 
 _OUTPUT_LIMIT_ERROR = {"message": "Incomplete response returned, reason: max_output_tokens"}
@@ -1563,11 +1705,12 @@ async def test_output_limit_exact_receipt_continues_once_and_preserves_partial_o
     assert owner is not None and owner.active_turn_id == "turn_auto"
     assert owner.automatic_input_outcome == "accepted"
     assert [method for method, _ in codex.requests] == ["turn/start", "thread/read"]
+    assert codex.background_requests == []
     assert codex.requests[0][1]["clientUserMessageId"] == owner.automatic_input_client_message_id
     assert [
         body["data"]["status"]
         for _, body in client.posts
-        if body["type"] == "external_session_status"
+        if body["type"] == "external_session_status" and "status" in body["data"]
     ] == ["running"]
     assert any(body["data"].get("item_data", {}).get("content") for _, body in client.posts)
     await _forward_output_limit_event(
@@ -1581,7 +1724,7 @@ async def test_output_limit_exact_receipt_continues_once_and_preserves_partial_o
     assert len([method for method, _ in codex.requests if method == "turn/start"]) == 1
     assert read_bridge_state(tmp_path).automatic_input_outcome == "completed"
     assert read_bridge_state(tmp_path).active_turn_id is None
-    assert client.posts[-1][1]["data"]["status"] == "failed"
+    assert _last_lifecycle_status(client)["status"] == "failed"
 
 
 @pytest.mark.parametrize(
@@ -1606,7 +1749,7 @@ async def test_output_limit_lookalikes_do_not_continue(tmp_path: Path, message: 
         _output_limit_completion(error={"message": message}),
     )
     assert codex.requests == []
-    assert client.posts[-1][1]["data"]["status"] == "failed"
+    assert _last_lifecycle_status(client)["status"] == "failed"
 
 
 @pytest.mark.parametrize("fence", ["capability", "interrupted", "source", "thread", "shell"])
@@ -1631,7 +1774,7 @@ async def test_output_limit_requires_compatible_completed_source(
     await _forward_output_limit_event(client, codex, state, tmp_path, "turn/completed", params)
     assert codex.requests == []
     if fence == "capability":
-        assert "Ask it to continue" in client.posts[-1][1]["data"]["output"]
+        assert "Ask it to continue" in _last_lifecycle_status(client)["output"]
 
 
 @pytest.mark.parametrize(
@@ -1928,7 +2071,7 @@ async def test_output_limit_late_receipt_cancels_exact_input_once_and_waits_for_
         },
     )
     assert read_bridge_state(tmp_path).active_turn_id is None
-    assert client.posts[-1][1]["data"]["status"] == "idle"
+    assert _last_lifecycle_status(client)["status"] == "idle"
 
 
 async def test_output_limit_deferred_error_preserves_native_lifecycle(
@@ -1960,7 +2103,7 @@ async def test_output_limit_deferred_error_preserves_native_lifecycle(
     )
     assert codex.requests == []
     assert read_bridge_state(tmp_path).active_turn_id is None
-    assert client.posts[-1][1]["data"]["status"] == "idle"
+    assert _last_lifecycle_status(client)["status"] == "idle"
 
 
 @pytest.mark.parametrize("native_status", ["inProgress", "completed", "failed"])
@@ -1991,7 +2134,7 @@ async def test_output_limit_replay_reconciles_exact_receipt_without_resubmission
     owner = read_bridge_state(tmp_path)
     assert owner.automatic_input_turn_id == "turn_auto"
     assert owner.active_turn_id == ("turn_auto" if native_status == "inProgress" else None)
-    assert client.posts[-1][1]["data"]["status"] == (
+    assert _last_lifecycle_status(client)["status"] == (
         "running"
         if native_status == "inProgress"
         else "failed"
@@ -2017,7 +2160,7 @@ async def test_output_limit_terminal_tool_snapshot_fails_closed(
         ),
     )
     assert codex.requests == []
-    assert client.posts[-1][1]["data"]["status"] == "failed"
+    assert _last_lifecycle_status(client)["status"] == "failed"
 
 
 @pytest.mark.parametrize("native_status", ["inProgress", "completed", "failed"])
