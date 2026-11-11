@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # runs for the life of the conversation, so this only matters around teardown;
 # 0.1s keeps wait() responsive without loading the control channel.
 _POLL_INTERVAL_S = 0.1
+_CONTROL_TIMEOUT_S = 30.0
 
 # Reported when a harness's real exit code can't be recovered because the
 # zygote (its OS parent) died AND the harness pid is itself gone. Non-zero so a
@@ -138,7 +139,10 @@ class HarnessZygoteClient:
             socket.AF_UNIX, socket.SOCK_STREAM, fileno=control_fd
         )
         self._sock.setblocking(True)
+        self._sock.settimeout(_CONTROL_TIMEOUT_S)
         self._lock = asyncio.Lock()
+        self._control_failed = False
+        self._abandoned_forks: set[asyncio.Task[None]] = set()
 
     @classmethod
     def from_env(cls) -> HarnessZygoteClient | None:
@@ -167,6 +171,17 @@ class HarnessZygoteClient:
         :returns: A shim handle for the forked harness.
         :raises ZygoteHarnessUnavailable: If the zygote is down or errored.
         """
+        fork = asyncio.create_task(self._fork_harness(argv, env))
+        try:
+            return await asyncio.shield(fork)
+        except asyncio.CancelledError:
+            cleanup = asyncio.create_task(self._stop_abandoned_fork(fork))
+            self._abandoned_forks.add(cleanup)
+            cleanup.add_done_callback(self._abandoned_forks.discard)
+            raise
+
+    async def _fork_harness(self, argv: list[str], env: dict[str, str]) -> ZygoteHarnessProc:
+        """Keep the exchange and its returned child owned through caller cancellation."""
         reply = await self._exchange({"cmd": "fork_harness", "argv": argv, "env": env})
         if "error" in reply:
             raise ZygoteHarnessUnavailable(f"zygote harness fork failed: {reply['error']}")
@@ -174,6 +189,19 @@ class HarnessZygoteClient:
         if not isinstance(pid, int):
             raise ZygoteHarnessUnavailable(f"zygote returned no pid: {reply!r}")
         return ZygoteHarnessProc(pid, self)
+
+    async def _stop_abandoned_fork(self, fork: asyncio.Task[ZygoteHarnessProc]) -> None:
+        """Reap only the child created by a cancelled launch."""
+        try:
+            proc = await fork
+        except Exception:
+            logger.warning("Cancelled harness fork could not recover its child", exc_info=True)
+            return
+        try:
+            proc.kill()
+            await asyncio.wait_for(proc.wait(), timeout=_CONTROL_TIMEOUT_S + 5.0)
+        except Exception:
+            logger.warning("Could not reap cancelled harness fork pid=%s", proc.pid, exc_info=True)
 
     async def poll(self, pid: int) -> int | None:
         """Return a forked harness's exit code, or ``None`` if still running.
@@ -196,12 +224,20 @@ class HarnessZygoteClient:
         :raises ZygoteHarnessUnavailable: On any socket error / EOF.
         """
         async with self._lock:
+            if self._control_failed:
+                raise ZygoteHarnessUnavailable("harness zygote control channel is unusable")
             sock = self._sock
             if sock is None:
                 raise ZygoteHarnessUnavailable("harness zygote channel is closed")
             try:
                 return await asyncio.to_thread(self._exchange_blocking, sock, request)
-            except (OSError, ValueError) as exc:
+            except asyncio.CancelledError:
+                # A cancelled blocking worker can still consume a reply.
+                self._control_failed = True
+                raise
+            except (OSError, ValueError, ZygoteHarnessUnavailable) as exc:
+                # Keep the socket open: EOF would terminate healthy sibling harnesses.
+                self._control_failed = True
                 raise ZygoteHarnessUnavailable(f"harness zygote control error: {exc}") from exc
 
     @staticmethod

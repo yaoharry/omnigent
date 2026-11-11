@@ -11,22 +11,28 @@ protocol paths are fully testable here.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import os
 import signal
 import socket
+import threading
 
 import pytest
 
 from omnigent.host.runner_zygote import ZygoteManager
+from omnigent.inner import _proc
 from omnigent.runner._zygote import (
     _ZYGOTE_TEST_CHILD_EXIT_ENV_VAR,
     ZYGOTE_HARNESS_FD_ENV_VAR,
 )
 from omnigent.runtime.harnesses._harness_zygote_client import (
+    _ZYGOTE_LOST_EXIT_CODE,
     HarnessZygoteClient,
     ZygoteHarnessProc,
     ZygoteHarnessUnavailable,
 )
+from tests._helpers.polling import poll_until_async
 
 # os.fork / AF_UNIX socketpair are POSIX-only.
 pytestmark = [pytest.mark.posix_only, pytest.mark.asyncio]
@@ -185,6 +191,123 @@ async def test_fork_harness_raises_when_channel_closed(zygote: ZygoteManager, tm
     client = HarnessZygoteClient(left.fileno())
     with pytest.raises(ZygoteHarnessUnavailable):
         await client.fork_harness(["--harness", "x"], {"PATH": os.environ.get("PATH", "")})
+
+
+@pytest.mark.parametrize("reply", [b"", b'{"pid":', b"invalid\n", b"[]\n", b"\xff\n"])
+async def test_failed_exchange_never_reuses_a_late_fork_reply(reply: bytes) -> None:
+    left, peer = socket.socketpair()
+    client = HarnessZygoteClient(left.detach())
+    assert client._sock is not None
+    client._sock.settimeout(0.02)
+    try:
+        peer.sendall(reply)
+        with pytest.raises(ZygoteHarnessUnavailable):
+            await client.fork_harness([], {})
+        assert json.loads(peer.recv(65536))["cmd"] == "fork_harness"
+        peer.sendall(b'{"pid":123456}\n')
+
+        with pytest.raises(ZygoteHarnessUnavailable):
+            await client.fork_harness([], {})
+        peer.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            peer.recv(1)
+        assert client._sock.fileno() >= 0
+    finally:
+        client._sock.close()
+        peer.close()
+
+
+async def test_cancelled_fork_reaps_its_child_and_preserves_the_next_owner(
+    zygote: ZygoteManager, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client_on(zygote)
+    first_reply = threading.Event()
+    release_reply = threading.Event()
+    second_exchange = asyncio.Event()
+    first_pid: list[int] = []
+    exchange = client._exchange_blocking
+    loop = asyncio.get_running_loop()
+
+    def delayed_reply(sock, request):
+        if request["cmd"] == "fork_harness" and request["argv"] == ["first"]:
+            reply = exchange(sock, request)
+            first_pid.append(reply["pid"])
+            first_reply.set()
+            assert release_reply.wait(timeout=10)
+            return reply
+        loop.call_soon_threadsafe(second_exchange.set)
+        return exchange(sock, request)
+
+    monkeypatch.setattr(client, "_exchange_blocking", delayed_reply)
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "OMNIGENT_RUNNER_ZYGOTE_TEST_CHILD_SLEEP": "30",
+        "OMNIGENT_PROCESS_LOG_FILE": str(tmp_path / "h.log"),
+    }
+    first = asyncio.create_task(client.fork_harness(["first"], env))
+    second = None
+    proc = None
+    try:
+        assert await asyncio.to_thread(first_reply.wait, 5)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        second = asyncio.create_task(client.fork_harness(["second"], env))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(second_exchange.wait(), timeout=0.05)
+        release_reply.set()
+        proc = await asyncio.wait_for(second, timeout=5)
+        assert proc.pid != first_pid[0]
+        assert _proc.process_alive(proc.pid)
+        assert zygote.is_running()
+        await poll_until_async(lambda: not _proc.process_alive(first_pid[0]), timeout_s=5)
+        proc.kill()
+        assert await asyncio.wait_for(proc.wait(), timeout=5) == -signal.SIGKILL
+    finally:
+        release_reply.set()
+        if second is not None:
+            with contextlib.suppress(Exception):
+                proc = await asyncio.wait_for(second, timeout=5)
+        if proc is not None:
+            proc.kill()
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        for pid in first_pid:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+
+
+async def test_failed_channel_keeps_existing_harnesses_alive(
+    zygote: ZygoteManager, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client_on(zygote)
+    proc = await client.fork_harness(
+        [],
+        {
+            "PATH": os.environ.get("PATH", ""),
+            "OMNIGENT_RUNNER_ZYGOTE_TEST_CHILD_SLEEP": "30",
+            "OMNIGENT_PROCESS_LOG_FILE": str(tmp_path / "h.log"),
+        },
+    )
+    calls = 0
+
+    def timeout(*_args):
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("lost reply")
+
+    monkeypatch.setattr(client, "_exchange_blocking", timeout)
+    try:
+        with pytest.raises(ZygoteHarnessUnavailable):
+            await client.poll(proc.pid)
+        with pytest.raises(ZygoteHarnessUnavailable):
+            await client.fork_harness([], {})
+        assert calls == 1
+        assert _proc.process_alive(proc.pid)
+        assert zygote.is_running()
+        assert client._sock is not None and client._sock.fileno() >= 0
+    finally:
+        proc.kill()
+        assert await asyncio.wait_for(proc.wait(), timeout=5) == _ZYGOTE_LOST_EXIT_CODE
 
 
 async def test_wait_surfaces_failure_when_zygote_dies_and_harness_gone(
