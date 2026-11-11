@@ -842,6 +842,11 @@ plain `uv run pytest`, which starts a private server for the test.
   mobile drawer recover the child while leaving the neighboring parent intact.
   Host filesystem and fork/launch responses are mocked; this does not prove a
   native CLI received history or started in that directory.
+  Codex executor controls in
+  `tests/inner/test_codex_native_executor.py::test_missing_workspace_keeps_input_out_of_native_codex`
+  and `::test_workspace_removal_only_refuses_input_before_native_submission`
+  cover missing directories before handoff, during settings and reconnect,
+  and uncertain delivery when the directory disappears after submission.
 - **`compaction-model-recovery`:**
   `tests/harnesses/codex_native/forwarder/test_turn_errors.py::test_error_during_compaction_reports_the_previous_model_it_ran_on`
   covers detection;

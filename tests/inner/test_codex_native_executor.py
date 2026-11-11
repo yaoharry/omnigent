@@ -4546,6 +4546,123 @@ def _seed_bridge(tmp_path: Path, active_turn_id: str | None = None) -> None:
     )
 
 
+@pytest.mark.parametrize("live_injection", [False, True], ids=["run-turn", "live-steer"])
+@pytest.mark.parametrize("workspace_kind", ["missing", "file", "deleted-process-cwd"])
+def test_missing_workspace_keeps_input_out_of_native_codex(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    live_injection: bool,
+    workspace_kind: str,
+) -> None:
+    _FakeCodexNativeClient.requests = []
+    monkeypatch.setattr(
+        "omnigent.harnesses.codex_native.app_server.CodexAppServerClient",
+        _FakeCodexNativeClient,
+    )
+    _seed_bridge(tmp_path, active_turn_id="native_work" if live_injection else None)
+    original = read_bridge_state(tmp_path)
+    assert original is not None
+    workspace = tmp_path / "removed-workspace"
+    if workspace_kind == "file":
+        workspace.write_text("not a directory")
+    if workspace_kind == "deleted-process-cwd":
+
+        def missing_cwd() -> Path:
+            raise FileNotFoundError(errno.ENOENT, "synthetic deleted working directory")
+
+        monkeypatch.setattr(codex_native_executor.Path, "cwd", missing_cwd)
+    else:
+        write_bridge_state(tmp_path, replace(original, cwd=str(workspace)))
+    before = read_bridge_state(tmp_path)
+    content = [{"type": "input_text", "text": "keep the entire original message 🦉"}]
+    executor = CodexNativeExecutor(bridge_dir=tmp_path)
+
+    async def send() -> None:
+        if live_injection:
+            assert not await executor.enqueue_session_message("main", content)
+        else:
+            [failure] = [
+                event
+                async for event in executor.run_turn(
+                    [{"role": "user", "content": content}], [], ""
+                )
+            ]
+            assert isinstance(failure, ExecutorError)
+            assert failure.code == "workspace_missing"
+            assert failure.undelivered and failure.preserve_session
+
+    asyncio.run(send())
+
+    assert _FakeCodexNativeClient.requests == []
+    assert read_bridge_state(tmp_path) == before
+    assert content == [{"type": "input_text", "text": "keep the entire original message 🦉"}]
+    assert not workspace.is_dir()
+
+
+@pytest.mark.parametrize("stage", ["settings", "drain-reconnect", "after-submission"])
+def test_workspace_removal_only_refuses_input_before_native_submission(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stage: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _seed_bridge(tmp_path)
+    original = read_bridge_state(tmp_path)
+    assert original is not None
+    write_bridge_state(tmp_path, replace(original, cwd=str(workspace)))
+
+    class RemovingClient(_FakeCodexNativeClient):
+        requests = []
+        connections = 0
+
+        async def connect(self) -> None:
+            type(self).connections += 1
+            if stage == "drain-reconnect" and type(self).connections == 2:
+                workspace.rmdir()
+            await super().connect()
+
+        async def request(self, method, params):
+            if stage == "settings" and method == "thread/settings/update":
+                workspace.rmdir()
+            if method == "turn/start":
+                type(self).requests.append((method, params))
+                if stage == "drain-reconnect":
+                    raise CodexAppServerResponseError(
+                        {"code": -32600, "message": "Server is draining; retry after reconnecting"}
+                    )
+                if stage == "after-submission":
+                    workspace.rmdir()
+                    raise ConnectionResetError("accepted input, lost reply")
+            return await super().request(method, params)
+
+    monkeypatch.setattr(
+        "omnigent.harnesses.codex_native.app_server.CodexAppServerClient", RemovingClient
+    )
+
+    async def send():
+        return [
+            event
+            async for event in CodexNativeExecutor(bridge_dir=tmp_path).run_turn(
+                [{"role": "user", "content": "retain my original input"}],
+                [],
+                "",
+                ExecutorConfig(model="example-model") if stage == "settings" else None,
+            )
+        ]
+
+    [failure] = asyncio.run(send())
+    assert isinstance(failure, ExecutorError)
+    assert failure.preserve_session
+    if stage == "after-submission":
+        assert failure.code == "codex_delivery_unconfirmed"
+        assert not failure.undelivered
+    else:
+        assert failure.code == "workspace_missing"
+        assert failure.undelivered
+    assert [method for method, _ in RemovingClient.requests] == (
+        ["thread/settings/update"] if stage == "settings" else ["turn/start"]
+    )
+
+
 def test_turn_start_is_not_gated_on_pending_mcp_startup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

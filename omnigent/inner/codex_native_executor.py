@@ -18,7 +18,7 @@ from typing import Literal, cast
 from websockets.exceptions import WebSocketException
 
 from omnigent.debug_logging import debug_event
-from omnigent.errors import OmnigentError
+from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.harnesses.codex_native import side_chat
 from omnigent.harnesses.codex_native.app_server import (
     CodexAppServerClient,
@@ -329,6 +329,25 @@ _DELIVERY_STAGES: dict[str, str] = {
 }
 
 
+def _codex_input_workspace(state: CodexNativeBridgeState) -> str:
+    """Refuse missing workspaces before Codex resolves provider auth against them."""
+    try:
+        workspace = Path(state.cwd) if state.cwd else Path.cwd()
+        if not workspace.is_dir():
+            raise FileNotFoundError("Codex workspace is not an available directory")
+    except OSError as exc:
+        raise _CodexNativeInputUndelivered(
+            CodexStartupFailure(
+                message="The Codex workspace is no longer available, "
+                "so this message was not sent.",
+                code=ErrorCode.WORKSPACE_MISSING,
+                remediation="Restore the workspace or choose an existing directory, then retry.",
+            ),
+            preserve_session=True,
+        ) from exc
+    return str(workspace)
+
+
 async def _native_delivery_request(
     client: CodexAppServerClient,
     method: _NativeDeliveryMethod,
@@ -445,6 +464,7 @@ async def _native_delivery_request_once(
     bridge_dir: Path,
 ) -> CodexMessage | None:
     """Pair each RPC attempt with its result; ``None`` means a receipt confirmed a lost reply."""
+    _codex_input_workspace(state)
     attempt_id = uuid.uuid4().hex
     stage = _DELIVERY_STAGES[method]
     expected = params.get("expectedTurnId") if method == "turn/steer" else None
@@ -559,6 +579,7 @@ async def _start_codex_turn(
     settings_overrides: Mapping[str, object],
 ) -> None:
     """Apply optional settings and start one Codex turn on an idle thread."""
+    workspace = _codex_input_workspace(state)
     settings_overrides = dict(settings_overrides)
     # Settings applied while their config write failed are recorded beside the config.
     unmirrored = await asyncio.to_thread(read_unmirrored_codex_settings, bridge_dir)
@@ -619,7 +640,7 @@ async def _start_codex_turn(
             "environments": [
                 {
                     "environmentId": "local",
-                    "cwd": state.cwd or str(Path.cwd()),
+                    "cwd": workspace,
                 }
             ],
         },
